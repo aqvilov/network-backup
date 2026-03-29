@@ -21,13 +21,6 @@ netbackup-mvp/
 
 ## Как собрать
 
-### Требования
-- Windows 10/11
-- Visual Studio Build Tools 2019 или 2022
-  Скачать: https://visualstudio.microsoft.com/downloads/
-  → "Tools for Visual Studio" → "Build Tools for Visual Studio"
-  При установке выбрать: "Desktop development with C++"
-
 ### Сборка в VSCode
 1. Открой папку в VSCode
 2. Открой терминал: Terminal → New Terminal
@@ -39,7 +32,12 @@ netbackup-mvp/
 4. Нажми Ctrl+Shift+B → "Собрать NetBackup"
 5. Появится NetBackup.exe — запускай!
 
-### Альтернатива — сборка из командной строки
+---
+Для сборки в VS должен быть установлен "Developing Desktop Apps C++
+---
+
+
+### Альтернатива - сборка из командной строки
 Открой "x64 Native Tools Command Prompt for VS" из Пуска и выполни:
 ```
 cd путь\до\netbackup-mvp
@@ -58,7 +56,7 @@ cl /EHsc /std:c++17 /Fe:NetBackup.exe src\MainWindow.cpp /I include /link comctl
 - Лог файл (%APPDATA%\NetBackup\backup.log)
 - Кнопка открыть папку бэкапа
 
-## Следующий шаг — Google Drive
+## next feat::
 
 После того как локальный бэкап работает, добавим загрузку в Google Drive:
 - Регистрация приложения в Google Cloud Console
