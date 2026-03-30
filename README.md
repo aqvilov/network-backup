@@ -19,21 +19,16 @@ netbackup-mvp/
     └── tasks.json     — задача сборки
 ```
 
-## Как собрать
-
 ### Сборка в VSCode
-1. Открой папку в VSCode
-2. Открой терминал: Terminal → New Terminal
-3. Выполни команду для активации компилятора:
-   ```
-   "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-   ```
-   (путь может отличаться, найди vcvars64.bat через поиск в C:\Program Files)
-4. Нажми Ctrl+Shift+B → "Собрать NetBackup"
-5. Появится NetBackup.exe — запускай!
-
 ---
 Для сборки в VS должен быть установлен "Developing Desktop Apps C++
+
+После этого зайдите в Developer Command Prompt for VS и для сборки текущей версии приложения выполните:
+```
+cd C:\Users\aqvilov\Desktop\mvp
+cl /EHsc /std:c++17 /utf-8 /Fe:NetBackup.exe src\MainWindow.cpp /I include /link comctl32.lib shell32.lib ole32.lib user32.lib gdi32.lib /SUBSYSTEM:WINDOWS
+```
+
 ---
 
 
