@@ -28,6 +28,7 @@ netbackup-mvp/
 cd C:\Users\aqvilov\Desktop\mvp
 cl /EHsc /std:c++17 /utf-8 /Fe:NetBackup.exe src\MainWindow.cpp /I include /link comctl32.lib shell32.lib ole32.lib user32.lib gdi32.lib /SUBSYSTEM:WINDOWS
 ```
+После этого, соберется .exe файл, готовый к тестированию
 
 ---
 
