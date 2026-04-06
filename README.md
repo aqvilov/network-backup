@@ -19,13 +19,13 @@ netbackup-mvp/
     └── tasks.json     — задача сборки
 ```
 
-### Сборка в VSCode
+### Сборка в Visual Studio
 ---
-Для сборки в VS должен быть установлен "Developing Desktop Apps C++
+Для сборки в VS должен быть установлен "Developing Desktop Apps C++"
 
-После этого зайдите в Developer Command Prompt for VS и для сборки текущей версии приложения выполните:
+После этого зайдите в **Developer Command Prompt for VS** и для сборки текущей версии приложения выполните:
 ```
-cd C:\Users\aqvilov\Desktop\mvp
+cd C:\Users\путь\к\вашей\папке
 cl /EHsc /std:c++17 /utf-8 /Fe:NetBackup.exe src\MainWindow.cpp /I include /link comctl32.lib shell32.lib ole32.lib user32.lib gdi32.lib /SUBSYSTEM:WINDOWS
 ```
 
