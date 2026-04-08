@@ -11,12 +11,19 @@
 #include <shellapi.h>
 #include <string>
 #include <sstream>
+#include <atomic>   // для атомарного флага
+//Атомарный файл — это файл, операции с которым выполняются так, что либо вся операция завершается полностью, либо не выполняется вовсе.
+//Опр с яндекса.
 
 #include "../include/Logger.h"
 #include "../include/Config.h"
 #include "../include/FileUtils.h"
 #include "../include/Watcher.h"
 #include "../include/BackupQueue.h"
+
+#include <filesystem> //библиотека для работы с файллами и папками
+#include <functional> //для рекурсии
+namespace fs = std::filesystem; //Ну просто сокращение 
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -32,10 +39,14 @@
 
 #define WM_LOG_UPDATE  (WM_USER + 1) 
 #define WM_STATS_UPDATE (WM_USER + 2)
+#define WM_FULLSYNC_UPDATE   (WM_USER + 3) 
+#define WM_START_WATCHER     (WM_USER + 4)
 
 static Watcher      g_watcher;
 static BackupQueue  g_queue;
-static bool         g_isRunning = false;
+static std::atomic<bool> g_isRunning{false}; //Сделал Атомарным, чтобы небыло неопределенного поведения.
+static std::atomic<bool> g_isFullSyncRunning{false};  //добавил, чтобы не путаться с Арсом фигней сверху. 
+//Флаг, который блокирует повторный запуск синхронизации, когда она уже работает.
 
 static HWND g_hWnd = nullptr;
 static HWND g_hList = nullptr;
@@ -151,62 +162,182 @@ static void CreateControls(HWND hWnd) {
     AddCol(g_hList, L"Файл", 430, 2);
 }
 
+//Функиця Полной Синхронизации.
+static void FullSync(const std::wstring& watchRoot, const std::wstring& destDir, HWND hWnd) {
+    Logger::Info(L"FullSync начата для " + watchRoot + L" -> " + destDir); //УБРАТЬ ПОТОМ.
+    uint64_t fileCount = 0;
+    uint64_t errorCount = 0;
+    uint64_t totalBytes = 0;
+
+    std::function<void(const fs::path&)> walk = [&](const fs::path& dir) 
+    {
+        for (const auto& entry : fs::directory_iterator(dir)) 
+        {
+            if (!g_isFullSyncRunning.load()) return;
+            if (entry.is_directory()) 
+            {
+                walk(entry.path()); //Рекурсивный вызов, для подпапок вызываем walk
+            } 
+            else if (entry.is_regular_file()) 
+            {
+                std::wstring src = entry.path().wstring();
+                // Пропускаем временные/системные
+                std::wstring fname = entry.path().filename().wstring();
+                if (!fname.empty() && fname[0] == L'~') return;
+                if (fname == L"desktop.ini" || fname == L"thumbs.db") return;
+
+                auto result = FileUtils::CopyToBackup(src, watchRoot, destDir);
+                fileCount++;
+                if (result.success) 
+                {
+                    totalBytes += result.bytesCopied;
+                } else if (result.error.find(L"Пропущен") == std::wstring::npos) 
+                {
+                    errorCount++;
+                    Logger::Error(L"[FullSync] " + result.error);
+                }
+
+                // Обновляем статус каждые 10 файлов
+                if (fileCount % 10 == 0) 
+                {
+                    wchar_t buf[256];
+                    swprintf_s(buf, L"Синхронизация: %llu файлов, ошибок: %llu", fileCount, errorCount);
+                    PostMessageW(hWnd, WM_FULLSYNC_UPDATE, (WPARAM)(new std::wstring(buf)), 0);
+                }
+            }
+        }
+    };
+
+    try 
+    {
+        fs::path root(watchRoot);
+        if (!fs::exists(root)) 
+        {
+            PostMessageW(hWnd, WM_FULLSYNC_UPDATE, (WPARAM)(new std::wstring(L"Ошибка: папка слежки не существует")), 0);
+            return;
+        }
+        Logger::Info(L"Начинаем обход папки " + watchRoot); //УБРАТЬ ПОТОМ.
+        walk(root);
+    } 
+    catch (const std::exception& e) 
+    {
+        std::wstring err = L"Исключение: " + std::wstring(e.what(), e.what() + strlen(e.what()));
+        Logger::Error(err);  //УБРАТЬ ПОТОМ.
+        PostMessageW(hWnd, WM_FULLSYNC_UPDATE, (WPARAM)(new std::wstring(err)), 0);
+        return;
+    }
+
+    wchar_t finalMsg[256];
+    swprintf_s(finalMsg, L"Синхронизация завершена. Файлов: %llu, ошибок: %llu, байт: %s",
+               fileCount, errorCount, FileUtils::FormatSize(totalBytes).c_str());
+    Logger::Info(finalMsg);
+    PostMessageW(hWnd, WM_FULLSYNC_UPDATE, (WPARAM)(new std::wstring(finalMsg)), 0);
+    PostMessageW(hWnd, WM_START_WATCHER, 0, 0);
+}
+
+
 static void StartBackup(HWND hWnd) {
+    FILE* f = _wfopen(L"C:\\temp\\netbackup_debug.log", L"a");
+    if (f) {
+        fwprintf(f, L"StartBackup вызван\n");
+        fclose(f);
+}
+    
     std::wstring watch = Config::Get(L"watchPath");
     std::wstring dest = Config::Get(L"destPath");
 
-    if (watch.empty() || dest.empty()) {
+    if (watch.empty() || dest.empty()) 
+    {
         MessageBoxW(hWnd, L"Выберите обе папки.", L"Ошибка", MB_ICONWARNING);
         return;
     }
-    if (watch == dest) {
+    if (watch == dest) 
+    {
         MessageBoxW(hWnd, L"Папки должны быть разными.", L"Ошибка", MB_ICONWARNING);
         return;
     }
+    //Нельзя повтроить запуск, если запучщенно
+    if (g_isFullSyncRunning.load() || g_isRunning.load()) return; //Сделал Атомарными
+    g_isFullSyncRunning.store(true);
 
+    //Блокируем остальные кнопки на время синхронизации.
+    EnableWindow(g_hBtnStart, FALSE);
+    EnableWindow(g_hBtnStop, FALSE);
+    SetWindowTextW(g_hLblStatus, L"Выполняется первоначальная синхронизация...");
 
-    g_queue.Start(watch, dest, [](const std::wstring& path, bool ok, uint64_t bytes) {
+    // Запускаем поток полной синхронизации
+    std::thread syncThread([hWnd, watch, dest]() 
+    {
+        FullSync(watch, dest, hWnd);
+    });
+    syncThread.detach();
+
+    //Решил убрать здесь Wather и Queue запуск, пусть отдельно будет лучше.
+    Logger::Info(L"StartBackup: watch=" + watch + L", dest=" + dest); //УБРАТЬ ПОТОМ
+}
+
+static void ActuallyStartWatcher() // функия Арса, просто отдельно.
+{
+    if (g_isRunning.load()) return; //Повторного запуска НЕ БУДЕТ.
+
+    std::wstring watch = Config::Get(L"watchPath");
+    std::wstring dest = Config::Get(L"destPath");
+
+    g_queue.Start(watch, dest, [](const std::wstring& path, bool ok, uint64_t bytes) 
+    {
         struct Payload { std::wstring path; bool ok; uint64_t bytes; };
         auto* p = new Payload{ path, ok, bytes };
         PostMessageW(g_hWnd, WM_LOG_UPDATE, (WPARAM)p, 0);
-        });
+    });
 
-    // Запускаем слежку за файлами
     bool started = g_watcher.Start(watch, true,
-        [](FileAction action, const std::wstring& path) {
-            if (action == FileAction::Added || action == FileAction::Modified
-                || action == FileAction::Renamed)
+        [](FileAction action, const std::wstring& path) 
+        {
+            if (action == FileAction::Added || action == FileAction::Modified || action == FileAction::Renamed) 
             {
                 g_queue.Enqueue(path);
-            }
-            else if (action == FileAction::Deleted) {
+            } else if (action == FileAction::Deleted) 
+            {
                 Logger::Info(L"Удалён: " + path);
             }
         }
     );
 
-    if (!started) {
+    if (!started) 
+    {
         g_queue.Stop();
-        MessageBoxW(hWnd, L"Не удалось открыть папку слежки.\nПроверьте что папка существует.",
-            L"Ошибка", MB_ICONERROR);
+        MessageBoxW(g_hWnd, L"Не удалось открыть папку слежки.", L"Ошибка", MB_ICONERROR);
+        EnableWindow(g_hBtnStart, TRUE);
+        g_isFullSyncRunning.store(false);
         return;
     }
 
     g_isRunning = true;
+    g_isFullSyncRunning = false;
     SetWindowTextW(g_hLblStatus, (L"Слежу: " + watch).c_str());
-    EnableWindow(g_hBtnStart, FALSE);
     EnableWindow(g_hBtnStop, TRUE);
     EnableWindow(g_hBtnOpenDest, TRUE);
     Logger::Info(L"Запущен. Слежка: " + watch + L" → " + dest);
 }
 
 static void StopBackup() {
+    //Если идет синк, то прерываем ее.
+    if (g_isFullSyncRunning.load()) 
+    {
+        g_isFullSyncRunning.store(false);         // поток FullSync увидит и выйдет
+        SetWindowTextW(g_hLblStatus, L"Остановка синхронизации...");
+        // Не ждём завершения потока (он detached), просто даём ему выйти самому
+    }
+    
+    
     g_watcher.Stop();
     g_queue.Stop();
     g_isRunning = false;
+    
     SetWindowTextW(g_hLblStatus, L"Остановлено.");
     EnableWindow(g_hBtnStart, TRUE);
     EnableWindow(g_hBtnStop, FALSE);
+    
     Logger::Info(L"Остановлено.");
 }
 
@@ -300,6 +431,21 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         break;
     }
 
+    //Обнолвение Полной синхронизации
+    case WM_FULLSYNC_UPDATE:   
+    {
+        std::wstring* msg = (std::wstring*)wParam;
+        SetWindowTextW(g_hLblStatus, msg->c_str());
+        delete msg;
+        break;
+    }
+    //Иницализация Watchera крч
+    case WM_START_WATCHER: 
+    {
+        ActuallyStartWatcher();
+        break;
+    }
+    
     case WM_DESTROY:
         KillTimer(hWnd, ID_TIMER_UI);
         if (g_isRunning) StopBackup();
@@ -321,8 +467,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     std::wstring appDir = FileUtils::GetAppDataDir();
     CreateDirectoryW(appDir.c_str(), nullptr);
 
+    if (GetLastError() != ERROR_ALREADY_EXISTS && GetLastError() != 0) {
+        MessageBoxW(nullptr, L"Не удалось создать папку для настроек", L"Ошибка", MB_ICONERROR);
+    }
+
     // Инициализация логгера и конфига
-    Logger::Init(appDir + L"\\backup.log");
+    Logger::Init(L"C:\\temp\\netbackup.log"); //Не получается добавить в логи то, че надо.
+    //Logger::Init(appDir + L"\\backup.log");
     Config::Load(appDir + L"\\config.ini");
 
     Logger::Info(L"=== NetBackup запущен ===");

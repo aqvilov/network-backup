@@ -55,7 +55,12 @@ namespace FileUtils {
             fs::path relative = fs::relative(srcPath, rootPath);
             fs::path target   = destPath / relative;
 
-            fs::create_directories(target.parent_path());
+            // Проверяем создание папки.
+            if (!fs::create_directories(target.parent_path())) 
+            {
+                result.error = L"Не удалось создать папку: " + target.parent_path().wstring();
+                return result;
+            }
 
             fs::copy_file(srcPath, target, fs::copy_options::overwrite_existing);
 

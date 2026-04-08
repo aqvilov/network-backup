@@ -131,10 +131,19 @@ private:
                     default: shouldNotify = false; break;
                 }
 
-                if (shouldNotify && m_callback) {
-                    Sleep(150);
+                
+                
+                //if (shouldNotify && m_callback) {
+                //   Sleep(150);
+                //    m_callback(action, fullPath);
+                //}
+                //
+                // Убираем задержку.
+                if (shouldNotify && m_callback) 
+                {
                     m_callback(action, fullPath);
                 }
+
 
                 if (info->NextEntryOffset == 0) break;
                 info = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(
