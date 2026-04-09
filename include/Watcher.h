@@ -52,6 +52,8 @@ public:
         // Пробуждаем поток если он заблокирован в ReadDirectoryChangesW
         if (m_hDir != INVALID_HANDLE_VALUE) {
             CancelIoEx(m_hDir, nullptr);
+            CloseHandle(m_hDir);
+            m_hDir = INVALID_HANDLE_VALUE;
         }
         if (m_thread.joinable())
             m_thread.join();
@@ -79,6 +81,13 @@ private:
         alignas(DWORD) char buffer[65536];
         OVERLAPPED overlapped{};
         overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (overlapped.hEvent == NULL) {
+            // Не удалось создать событие
+            CloseHandle(m_hDir);
+            m_hDir = INVALID_HANDLE_VALUE;
+            m_running = false;
+            return;
+        }
 
         while (m_running.load()) {
             DWORD bytesReturned = 0;
