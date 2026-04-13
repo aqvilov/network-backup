@@ -11,9 +11,7 @@
 #include <shellapi.h>
 #include <string>
 #include <sstream>
-#include <atomic>   // для атомарного флага
-//Атомарный файл — это файл, операции с которым выполняются так, что либо вся операция завершается полностью, либо не выполняется вовсе.
-//Опр с яндекса.
+#include <atomic>
 #include <stack>
 
 #include "../include/Logger.h"
@@ -24,7 +22,7 @@
 
 #include <filesystem> //библиотека для работы с файллами и папками
 #include <functional> //для рекурсии
-namespace fs = std::filesystem; //Ну просто сокращение 
+namespace fs = std::filesystem; 
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -161,14 +159,19 @@ static void CreateControls(HWND hWnd) {
         };
     AddCol(g_hList, L"Время", 70, 0);
     AddCol(g_hList, L"Статус", 60, 1);
-    AddCol(g_hList, L"Файл", 430, 2);
+    AddCol(g_hList, L"Файл", 432, 2);
+
+    // Запрещаем изменение размера столбцов
+    HWND hHeader = ListView_GetHeader(g_hList);
+    if (hHeader) {
+        LONG style = GetWindowLongW(hHeader, GWL_STYLE);
+        SetWindowLongW(hHeader, GWL_STYLE, style | HDS_NOSIZING);
+    }
 }
 
 //Функиця Полной Синхронизации.
 static void FullSync(const std::wstring& watchRoot, const std::wstring& destDir, HWND hWnd) {
     uint64_t fileCount = 0;
-    uint64_t errorCount = 0;
-    uint64_t totalBytes = 0;
 
     // Вспомогательная лямбда для завершения с ошибкой
     auto finishWithError = [&](const std::wstring& errorMsg) {
@@ -212,22 +215,37 @@ static void FullSync(const std::wstring& watchRoot, const std::wstring& destDir,
                     if (!fname.empty() && fname[0] == L'~') continue;
                     if (fname == L"desktop.ini" || fname == L"thumbs.db") continue;
 
-                    auto result = FileUtils::CopyToBackup(src, watchRoot, destDir);
-                    fileCount++;
-                    if (result.success) {
-                        totalBytes += result.bytesCopied;
-                    } else if (result.error.find(L"Пропущен") == std::wstring::npos) {
-                        errorCount++;
-                        Logger::Error(L"[FullSync] " + result.error);
+                    // Проверяем, существует ли файл в бэкапе с тем же размером и временем
+                    try {
+                        fs::path srcPath(src);
+                        fs::path rootPath(watchRoot);
+                        fs::path destDirPath(destDir);
+                        
+                        // Вычисляем целевой путь
+                        std::wstring relative = FileUtils::GetRelativePath(src, watchRoot);
+                        fs::path targetPath = destDirPath / relative;
+                        
+                        // Если файл существует в бэкапе и имеет тот же размер и время модификации - пропускаем
+                        if (fs::exists(targetPath)) {
+                            auto srcTime = fs::last_write_time(srcPath);
+                            auto targetTime = fs::last_write_time(targetPath);
+                            auto srcSize = fs::file_size(srcPath);
+                            auto targetSize = fs::file_size(targetPath);
+                            
+                            if (srcSize == targetSize && srcTime == targetTime) {
+                                continue; // Файл уже актуален в бэкапе
+                            }
+                        }
+                    } catch (...) {
+                        // Если ошибка при проверке - всё равно добавляем в очередь
                     }
 
-                    // Обновляем статус каждые 10 файлов
-                    if (fileCount % 10 == 0) {
-                        wchar_t buf[256];
-                        swprintf_s(buf, L"Синхронизация: %llu файлов, ошибок: %llu", fileCount, errorCount);
-                        if (g_isFullSyncRunning.load()) {
-                            PostMessageW(hWnd, WM_FULLSYNC_UPDATE, (WPARAM)(new std::wstring(buf)), 0);
-                        }
+                    g_queue.Enqueue(src);
+                    fileCount++;
+                    wchar_t buf[256];
+                    swprintf_s(buf, L"Синхронизация: %llu файлов добавлено в очередь", fileCount);
+                    if (g_isFullSyncRunning.load()) {
+                        PostMessageW(hWnd, WM_FULLSYNC_UPDATE, (WPARAM)(new std::wstring(buf)), 0);
                     }
                 }
             }
@@ -241,11 +259,12 @@ static void FullSync(const std::wstring& watchRoot, const std::wstring& destDir,
 
         // Успешное завершение
         wchar_t finalMsg[256];
-        swprintf_s(finalMsg, L"Синхронизация завершена. Файлов: %llu, ошибок: %llu, байт: %s",
-                   fileCount, errorCount, FileUtils::FormatSize(totalBytes).c_str());
+        swprintf_s(finalMsg, L"Сканирование завершено. Файлов добавлено в очередь: %llu",
+                   fileCount);
         Logger::Info(finalMsg);
         g_isFullSyncRunning.store(false);
         PostMessageW(hWnd, WM_FULLSYNC_UPDATE, (WPARAM)(new std::wstring(finalMsg)), 0);
+        Sleep(100); // небольшая задержка для обработки сообщений
         PostMessageW(hWnd, WM_START_WATCHER, 0, 0);
     }
     catch (const std::exception& e) {
@@ -290,6 +309,16 @@ static void StartBackup(HWND hWnd) {
 
     g_isFullSyncRunning.store(true);
 
+    if (!g_queue.Start(watch, dest, [](const std::wstring& path, bool ok, uint64_t bytes) {
+        struct Payload { std::wstring path; bool ok; uint64_t bytes; };
+        auto* p = new Payload{ path, ok, bytes };
+        PostMessageW(g_hWnd, WM_LOG_UPDATE, (WPARAM)p, 0);
+    })) {
+        MessageBoxW(hWnd, L"Не удалось запустить очередь копирования", L"Ошибка", MB_ICONERROR);
+        g_isFullSyncRunning.store(false);
+        return;
+    }
+
     //Блокируем остальные кнопки на время синхронизации.
     EnableWindow(g_hBtnStart, FALSE);
     EnableWindow(g_hBtnStop, FALSE);
@@ -312,24 +341,20 @@ static void StartBackup(HWND hWnd) {
 
 static void ActuallyStartWatcher() // функия Арса, просто отдельно.
 {
-    if (g_isRunning.load()) return; //Повторного запуска НЕ БУДЕТ.
-
+    Logger::Info(L"[DEBUG] ActuallyStartWatcher вызвана");
+    
     // Сброс флага синхронизации, т.к. мы переходим к обычному режиму
     g_isFullSyncRunning.store(false);
+    
+    // Убедимся, что g_isRunning правильно инициализирован
+    if (g_isRunning.load()) {
+        Logger::Info(L"[DEBUG] Watcher уже запущен, выходим");
+        return;
+    }
 
     std::wstring watch = Config::Get(L"watchPath");
     std::wstring dest = Config::Get(L"destPath");
-
-    // Проверяем, что очередь успешно запущена
-    if (!g_queue.Start(watch, dest, [](const std::wstring& path, bool ok, uint64_t bytes) {
-        struct Payload { std::wstring path; bool ok; uint64_t bytes; };
-        auto* p = new Payload{ path, ok, bytes };
-        PostMessageW(g_hWnd, WM_LOG_UPDATE, (WPARAM)p, 0);
-    })) {
-        MessageBoxW(g_hWnd, L"Очередь копирования уже запущена", L"Ошибка", MB_ICONERROR);
-        EnableWindow(g_hBtnStart, TRUE);
-        return;
-    }
+    Logger::Info(L"[DEBUG] Попытка запустить watcher для: " + watch);
 
     bool started = g_watcher.Start(watch, true,
         [](FileAction action, const std::wstring& path) 
@@ -353,8 +378,8 @@ static void ActuallyStartWatcher() // функия Арса, просто отд
         return;
     }
 
-    g_isRunning = true;
-    g_isFullSyncRunning = false;
+    g_isRunning.store(true);
+    g_isFullSyncRunning.store(false);
     SetWindowTextW(g_hLblStatus, (L"Слежу: " + watch).c_str());
     EnableWindow(g_hBtnStop, TRUE);
     EnableWindow(g_hBtnOpenDest, TRUE);
@@ -376,7 +401,8 @@ static void StopBackup() {
     
     g_watcher.Stop();
     g_queue.Stop();
-    g_isRunning = false;
+    g_isRunning.store(false);
+    g_isFullSyncRunning.store(false);
     
     SetWindowTextW(g_hLblStatus, L"Остановлено.");
     EnableWindow(g_hBtnStart, TRUE);
@@ -534,8 +560,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     // создаём окно
     HWND hWnd = CreateWindowW(
         L"NetBackupMVP",
-        L"NetBackup — Локальный бэкап",
-        WS_OVERLAPPEDWINDOW,
+        L"NetBackup — Локальное хранение",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT,
         600, 500,
         nullptr, nullptr, hInstance, nullptr
