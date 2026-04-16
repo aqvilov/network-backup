@@ -25,15 +25,17 @@ public:
     ~BackupQueue() { Stop(); }
 
     // Запустить рабочий поток
-    void Start(const std::wstring& watchRoot,
+    bool Start(const std::wstring& watchRoot, //Сделал бул, чтобы не создавать 2 поток, пока старый будет висеть.
                const std::wstring& destDir,
-               ResultCallback      onResult)
+               ResultCallback onResult)
     {
+        if (m_worker.joinable()) return false;  // уже запущен
         m_watchRoot = watchRoot;
         m_destDir   = destDir;
         m_onResult  = onResult;
         m_running   = true;
         m_worker    = std::thread(&BackupQueue::WorkerLoop, this);
+        return true;
     }
 
     void Stop() {
@@ -92,8 +94,7 @@ private:
                 if (result.success) {
                     m_stats.copied++;
                     m_stats.bytes += result.bytesCopied;
-                    Logger::Info(L"Скопирован: " + filePath +
-                                 L" (" + FileUtils::FormatSize(result.bytesCopied) + L")");
+                    Logger::Info(L"Скопирован: " + filePath + L" (" + FileUtils::FormatSize(result.bytesCopied) + L")");
                 } else if (result.error.find(L"Пропущен") != std::wstring::npos) {
                     m_stats.skipped++;
                 } else {
