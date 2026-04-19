@@ -122,4 +122,12 @@ namespace FileUtils {
         MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), result.data(), len);
         return result;
     }
+
+    static std::wstring GetFileName(const std::wstring& path) {
+        size_t pos = path.find_last_of(L"\\/");
+        if (pos != std::wstring::npos) {
+            return path.substr(pos + 1);
+        }
+        return path;
+    }
 }
