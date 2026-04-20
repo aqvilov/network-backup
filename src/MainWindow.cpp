@@ -40,6 +40,7 @@ namespace fs = std::filesystem;
 #define WM_STATS_UPDATE (WM_USER + 2)
 #define WM_FULLSYNC_UPDATE   (WM_USER + 3) 
 #define WM_START_WATCHER     (WM_USER + 4)
+#define WM_TRAYICON (WM_USER + 5)
 
 static Watcher      g_watcher;
 static BackupQueue  g_queue;
@@ -58,6 +59,8 @@ static HWND g_hBtnStart = nullptr;
 static HWND g_hBtnStop = nullptr;
 static HWND g_hBtnOpenDest = nullptr;
 static HFONT g_hFont = nullptr;
+static NOTIFYICONDATA nid = {};
+static HMENU hTrayMenu = nullptr;
 
 
 
@@ -160,13 +163,27 @@ static void CreateControls(HWND hWnd) {
     AddCol(g_hList, L"Время", 70, 0);
     AddCol(g_hList, L"Статус", 60, 1);
     AddCol(g_hList, L"Файл", 432, 2);
+}
 
-    // Запрещаем изменение размера столбцов
-    HWND hHeader = ListView_GetHeader(g_hList);
-    if (hHeader) {
-        LONG style = GetWindowLongW(hHeader, GWL_STYLE);
-        SetWindowLongW(hHeader, GWL_STYLE, style | HDS_NOSIZING);
-    }
+static void AddTrayIcon(HWND hWnd) {
+    nid.cbSize = sizeof(NOTIFYICONDATA);
+    nid.hWnd = hWnd;
+    nid.uID = 1;
+    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    nid.uCallbackMessage = WM_TRAYICON;
+    nid.hIcon = LoadIcon(nullptr, IDI_APPLICATION); 
+    wcscpy_s(nid.szTip, L"Network Backup");
+    Shell_NotifyIconW(NIM_ADD, &nid);
+}
+
+static void CreateTrayMenu(HWND hWnd){
+    hTrayMenu = CreatePopupMenu();
+    AppendMenuW(hTrayMenu, MF_STRING, 2, L"Скрыть");
+    AppendMenuW(hTrayMenu, MF_STRING, 3, L"Выйти");
+}
+
+static void RemoveTrayIcon() {
+    Shell_NotifyIconW(NIM_DELETE, &nid);
 }
 
 //Функиця Полной Синхронизации.
@@ -411,6 +428,7 @@ static void StopBackup() {
     Logger::Info(L"Остановлено.");
 }
 
+
 //КАЛЛ БЕК
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -420,11 +438,30 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         CreateControls(hWnd);
         // Таймер обновления статистики каждые 500ms
         SetTimer(hWnd, ID_TIMER_UI, 500, nullptr);
+        CreateTrayMenu(hWnd);
+        AddTrayIcon(hWnd);
         break;
 
     case WM_TIMER:
         if (wParam == ID_TIMER_UI) RefreshStats();
         break;
+    
+    case WM_TRAYICON:
+        if (lParam == WM_RBUTTONUP) {
+            POINT pt;
+            GetCursorPos(&pt);
+            SetForegroundWindow(hWnd);
+            TrackPopupMenu(hTrayMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, nullptr);
+            PostMessage(hWnd, WM_NULL, 0, 0);
+        } else if (lParam == WM_LBUTTONDBLCLK){
+            ShowWindow(hWnd, SW_RESTORE);
+            SetForegroundWindow(hWnd);
+        }
+        break;
+
+    case WM_CLOSE:
+        ShowWindow(hWnd, SW_HIDE);
+        return 0;
 
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
@@ -455,6 +492,17 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 ShellExecuteW(nullptr, L"open", dest.c_str(), nullptr, nullptr, SW_SHOW);
             break;
         }
+        case 1:
+            ShowWindow(hWnd, SW_RESTORE);
+            SetForegroundWindow(hWnd);
+            break;
+        case 2:
+            ShowWindow(hWnd, SW_HIDE);
+            break;
+        case 3:
+            RemoveTrayIcon();
+            DestroyWindow(hWnd);
+            break;
         }
         break;
 
@@ -519,6 +567,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_DESTROY:
         KillTimer(hWnd, ID_TIMER_UI);
         if (g_isRunning) StopBackup();
+        RemoveTrayIcon();
         PostQuitMessage(0);
         break;
 
