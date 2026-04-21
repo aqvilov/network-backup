@@ -293,6 +293,24 @@ static void StartBackup(HWND hWnd) {
         MessageBoxW(hWnd, L"Папки должны быть разными.", L"Ошибка", MB_ICONWARNING);
         return;
     }
+    
+    // Проверка что папки не являются подпапками друг друга
+    if (FileUtils::IsSubdirectory(watch, dest)) {
+        MessageBoxW(hWnd, 
+            L"Папка бэкапа не может быть внутри папки слежки!\n"
+            L"Это приведёт к бесконечному копированию.",
+            L"Ошибка",
+            MB_ICONERROR);
+        return;
+    }
+    if (FileUtils::IsSubdirectory(dest, watch)) {
+        MessageBoxW(hWnd, 
+            L"Папка слежки не может быть внутри папки бэкапа!",
+            L"Ошибка",
+            MB_ICONERROR);
+        return;
+    }
+    
     if (!fs::exists(watch)) {
         MessageBoxW(hWnd, L"Папка слежки не существует", L"Ошибка", MB_ICONERROR);
         return;

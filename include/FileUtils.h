@@ -27,6 +27,26 @@ namespace FileUtils {
         return rel.wstring();
     }
 
+    // Проверка, является ли один путь подпапкой другого
+    inline bool IsSubdirectory(const std::wstring& potentialParent, 
+                               const std::wstring& potentialChild) 
+    {
+        try {
+            fs::path parent = fs::canonical(potentialParent);
+            fs::path child = fs::canonical(potentialChild);
+            
+            // Проверяем, является ли child подпапкой parent
+            auto mismatch_pair = std::mismatch(
+                parent.begin(), parent.end(),
+                child.begin(), child.end()
+            );
+            
+            return mismatch_pair.first == parent.end();
+        } catch (...) {
+            return false;
+        }
+    }
+
     inline CopyResult CopyToBackup(const std::wstring& src,
                                    const std::wstring& watchRoot,
                                    const std::wstring& destDir)

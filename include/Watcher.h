@@ -8,6 +8,10 @@
 #include <functional>
 #include <thread>
 #include <atomic>
+#include <map>
+#include <mutex>
+#include <chrono>
+#include <vector>
 
 enum class FileAction {
     Added,    // файл создан
@@ -43,18 +47,26 @@ public:
             return false;
 
         m_running = true;
-        m_thread  = std::thread(&Watcher::Loop, this);
+        m_debounceRunning = true;
+        m_thread = std::thread(&Watcher::Loop, this);
+        m_debounceThread = std::thread(&Watcher::DebounceLoop, this);
         return true;
     }
 
     void Stop() {
         m_running = false;
+        m_debounceRunning = false;
+        
         // Пробуждаем поток если он заблокирован в ReadDirectoryChangesW
         if (m_hDir != INVALID_HANDLE_VALUE) {
             CancelIoEx(m_hDir, nullptr);
             CloseHandle(m_hDir);
             m_hDir = INVALID_HANDLE_VALUE;
         }
+        
+        if (m_debounceThread.joinable())
+            m_debounceThread.join();
+        
         if (m_thread.joinable())
             m_thread.join();
     }
@@ -62,6 +74,44 @@ public:
     bool IsRunning() const { return m_running.load(); }
 
 private:
+    struct PendingEvent {
+        FileAction action;
+        std::wstring path;
+        std::chrono::steady_clock::time_point lastEventTime;
+    };
+
+    void DebounceLoop() {
+        while (m_debounceRunning.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            
+            auto now = std::chrono::steady_clock::now();
+            std::vector<PendingEvent> readyEvents;
+            
+            {
+                std::lock_guard<std::mutex> lock(m_eventsMutex);
+                auto it = m_pendingEvents.begin();
+                while (it != m_pendingEvents.end()) {
+                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - it->second.lastEventTime
+                    ).count();
+                    
+                    if (elapsed >= DEBOUNCE_DELAY_MS) {
+                        readyEvents.push_back(it->second);
+                        it = m_pendingEvents.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            }
+            
+            for (const auto& event : readyEvents) {
+                if (m_callback) {
+                    m_callback(event.action, event.path);
+                }
+            }
+        }
+    }
+
     void Loop() {
         m_hDir = CreateFileW(
             m_path.c_str(),
@@ -142,15 +192,14 @@ private:
 
                 
                 
-                //if (shouldNotify && m_callback) {
-                //   Sleep(150);
-                //    m_callback(action, fullPath);
-                //}
-                //
-                // Убираем задержку.
-                if (shouldNotify && m_callback) 
+                if (shouldNotify) 
                 {
-                    m_callback(action, fullPath);
+                    std::lock_guard<std::mutex> lock(m_eventsMutex);
+                    m_pendingEvents[fullPath] = PendingEvent{
+                        action,
+                        fullPath,
+                        std::chrono::steady_clock::now()
+                    };
                 }
 
 
@@ -173,4 +222,11 @@ private:
     std::thread    m_thread;
     std::atomic<bool> m_running{false};
     HANDLE         m_hDir = INVALID_HANDLE_VALUE;
+    
+    // Debouncing members
+    static constexpr int DEBOUNCE_DELAY_MS = 2000;
+    std::mutex m_eventsMutex;
+    std::map<std::wstring, PendingEvent> m_pendingEvents;
+    std::thread m_debounceThread;
+    std::atomic<bool> m_debounceRunning{false};
 };
