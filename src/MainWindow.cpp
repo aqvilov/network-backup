@@ -579,6 +579,21 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     CoInitialize(nullptr);
+
+    // Проверка на единственный экземпляр
+    HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"NetBackup_SingleInstance");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        // Приложение уже запущено - активируем существующее окно
+        HWND hExisting = FindWindowW(L"NetBackupMVP", nullptr);
+        if (hExisting) {
+            ShowWindow(hExisting, SW_RESTORE);
+            SetForegroundWindow(hExisting);
+        }
+        CloseHandle(hMutex);
+        CoUninitialize();
+        return 0;
+    }
+
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES };
     InitCommonControlsEx(&icc);
 
@@ -627,6 +642,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     }
 
     Logger::Info(L"=== NetBackup завершён ===");
+    CloseHandle(hMutex);
     CoUninitialize();
     return (int)msg.wParam;
 }
