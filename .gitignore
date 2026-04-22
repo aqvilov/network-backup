@@ -27,3 +27,4 @@ ipch/
 .vscode/launch.json
 
 *.log
+FileUtils_0.h
