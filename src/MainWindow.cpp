@@ -37,6 +37,7 @@ namespace fs = std::filesystem; //Ну просто сокращение
 #define ID_BTN_OPEN_DEST  105
 #define ID_LIST           106
 #define ID_TIMER_UI       200
+#define ID_BTN_APPLY_IGNORE  107
 
 #define WM_LOG_UPDATE  (WM_USER + 1) 
 #define WM_STATS_UPDATE (WM_USER + 2)
@@ -60,6 +61,8 @@ static HWND g_hBtnStart = nullptr;
 static HWND g_hBtnStop = nullptr;
 static HWND g_hBtnOpenDest = nullptr;
 static HFONT g_hFont = nullptr;
+static HWND g_hEdtIgnore = nullptr;
+static HWND g_hBtnApplyIgnore = nullptr;
 
 
 
@@ -143,8 +146,16 @@ static void CreateControls(HWND hWnd) {
     g_hLblStatus = MakeLabel(L"Ожидание...", 10, 115, 565, 20);
     g_hLblStats = MakeLabel(L"", 10, 135, 565, 18);
 
+    //игнорирование расширений
+    MakeLabel(L"Игнорировать расширения:", 10, 158, 140, 20);
+    g_hEdtIgnore = CreateWindowW(L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+        150, 155, 200, 22, hWnd, nullptr, nullptr, nullptr);
+    SendMessageW(g_hEdtIgnore, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+    g_hBtnApplyIgnore = MakeButton(L"Применить", 360, 154, 70, 24, (HMENU)ID_BTN_APPLY_IGNORE);
+
     // список событий
-    MakeLabel(L"Журнал событий:", 10, 160, 200, 18);
+    MakeLabel(L"Журнал событий:", 10, 185, 200, 18);
     g_hList = CreateWindowW(WC_LISTVIEWW, L"",
         WS_CHILD | WS_VISIBLE | WS_BORDER |
         LVS_REPORT | LVS_NOSORTHEADER | LVS_SHOWSELALWAYS,
@@ -211,6 +222,7 @@ static void FullSync(const std::wstring& watchRoot, const std::wstring& destDir,
                     std::wstring fname = entry.path().filename().wstring();
                     if (!fname.empty() && fname[0] == L'~') continue;
                     if (fname == L"desktop.ini" || fname == L"thumbs.db") continue;
+                    if (Config::IsExtensionIgnored(fname)) continue;
 
                     auto result = FileUtils::CopyToBackup(src, watchRoot, destDir);
                     fileCount++;
@@ -336,7 +348,13 @@ static void ActuallyStartWatcher() // функия Арса, просто отд
         {
             if (action == FileAction::Added || action == FileAction::Modified || action == FileAction::Renamed) 
             {
-                g_queue.Enqueue(path);
+                // Извлекаем имя файла
+                size_t slash = path.find_last_of(L"\\/");
+                std::wstring fname = (slash != std::wstring::npos) ? path.substr(slash + 1) : path;
+                if (!Config::IsExtensionIgnored(fname)) 
+                {
+                    g_queue.Enqueue(path);
+                }
             } else if (action == FileAction::Deleted) 
             {
                 Logger::Info(L"Удалён: " + path);
@@ -390,12 +408,15 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
     switch (msg) {
 
     case WM_CREATE:
+    {
         g_hWnd = hWnd;
         CreateControls(hWnd);
+        std::wstring ignoreList = Config::Get(L"ignoredExtensions", L"");
+        SetWindowTextW(g_hEdtIgnore, ignoreList.c_str());
         // Таймер обновления статистики каждые 500ms
         SetTimer(hWnd, ID_TIMER_UI, 500, nullptr);
         break;
-
+    }
     case WM_TIMER:
         if (wParam == ID_TIMER_UI) RefreshStats();
         break;
@@ -429,6 +450,17 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 ShellExecuteW(nullptr, L"open", dest.c_str(), nullptr, nullptr, SW_SHOW);
             break;
         }
+        case ID_BTN_APPLY_IGNORE:
+        {
+            int len = GetWindowTextLengthW(g_hEdtIgnore);
+            std::wstring text(len, L'\0');
+            GetWindowTextW(g_hEdtIgnore, text.data(), len + 1);
+            Config::SetIgnoredExtensions(text);
+            Logger::Info(L"Обновлён список игнорируемых расширений: " + text);
+            // Мгновенно обновить статус (опционально)
+            SetWindowTextW(g_hLblStatus, L"Фильтр расширений обновлён");
+            break;
+        }   
         }
         break;
 
@@ -470,8 +502,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         RECT rc;
         GetClientRect(hWnd, &rc);
         if (g_hList)
-            SetWindowPos(g_hList, nullptr, 10, 180,
-                rc.right - 20, rc.bottom - 190, SWP_NOZORDER);
+            SetWindowPos(g_hList, nullptr, 10, 205,
+                rc.right - 20, rc.bottom - 215, SWP_NOZORDER);
         break;
     }
 

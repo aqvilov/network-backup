@@ -7,6 +7,7 @@
 #include <sstream>
 #include <iomanip>
 #include <shlobj.h>
+#include "Config.h"
 
 namespace fs = std::filesystem;
 
@@ -49,6 +50,11 @@ namespace FileUtils {
             }
             if (filename == L"desktop.ini" || filename == L"thumbs.db") {
                 result.error = L"Пропущен системный файл";
+                return result;
+            }
+            if (Config::IsExtensionIgnored(filename)) 
+            {
+                result.error = L"Пропущен по фильтру расширений";
                 return result;
             }
 
