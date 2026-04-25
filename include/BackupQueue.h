@@ -1,5 +1,5 @@
 #pragma once
-//очередь задач на копирование
+// очередь задач на копирование
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -16,8 +16,8 @@
 
 // коллбэк результата: путь к файлу, успех/неудача, сколько байт скопировано
 using ResultCallback = std::function<void(const std::wstring& path,
-                                          bool success,
-                                          uint64_t bytes)>;
+    bool success,
+    uint64_t bytes)>;
 
 class BackupQueue {
 public:
@@ -26,15 +26,15 @@ public:
 
     // Запустить рабочий поток
     bool Start(const std::wstring& watchRoot, //Сделал бул, чтобы не создавать 2 поток, пока старый будет висеть.
-               const std::wstring& destDir,
-               ResultCallback onResult)
+        const std::wstring& destDir,
+        ResultCallback onResult)
     {
         if (m_worker.joinable()) return false;  // уже запущен
         m_watchRoot = watchRoot;
-        m_destDir   = destDir;
-        m_onResult  = onResult;
-        m_running   = true;
-        m_worker    = std::thread(&BackupQueue::WorkerLoop, this);
+        m_destDir = destDir;
+        m_onResult = onResult;
+        m_running = true;
+        m_worker = std::thread(&BackupQueue::WorkerLoop, this);
         return true;
     }
 
@@ -45,7 +45,7 @@ public:
             m_worker.join();
     }
 
-    // ДОБАВИТЬ В ОЧЕЕРЕДЬ
+    // ДОБАВИТЬ В ОЧЕРЕДЬ
     void Enqueue(const std::wstring& filePath) {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_pending.count(filePath)) return; // КОНТРИМ УЖЕ ДОБАВЛЕННЫЕ ФАЙЛЫ
@@ -55,17 +55,17 @@ public:
     }
 
     struct Stats {
-        uint64_t copied  = 0;  // файлов успешно скопировано
+        uint64_t copied = 0;  // файлов успешно скопировано
         uint64_t skipped = 0;  // файлов пропущено (не изменились)
-        uint64_t errors  = 0;  // ошибок
-        uint64_t bytes   = 0;  // байт скопировано суммарно
-        size_t   queued  = 0;  // сейчас в очереди
+        uint64_t errors = 0;  // ошибок
+        uint64_t bytes = 0;  // байт скопировано суммарно
+        size_t   queued = 0;  // сейчас в очереди
     };
 
     Stats GetStats() const {
         std::lock_guard<std::mutex> lock(m_mutex);
-        Stats s   = m_stats;
-        s.queued  = m_queue.size();
+        Stats s = m_stats;
+        s.queued = m_queue.size();
         return s;
     }
 
@@ -78,7 +78,7 @@ private:
                 std::unique_lock<std::mutex> lock(m_mutex);
                 m_cv.wait(lock, [this] {
                     return !m_queue.empty() || !m_running.load();
-                });
+                    });
                 if (!m_running.load() && m_queue.empty()) break;
                 if (m_queue.empty()) continue;
 
@@ -87,24 +87,37 @@ private:
                 m_pending.erase(filePath);
             }
 
-            auto result = FileUtils::CopyToBackup(filePath, m_watchRoot, m_destDir);
+            auto result = FileUtils::CopyToBackupWithVerify(filePath, m_watchRoot, m_destDir);
 
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
+
+                // Проверяем на ошибку CRC32
+                bool isCrcError = (!result.success && result.error.find(L"CRC32") != std::wstring::npos);
+
                 if (result.success) {
                     m_stats.copied++;
                     m_stats.bytes += result.bytesCopied;
                     Logger::Info(L"Скопирован: " + filePath + L" (" + FileUtils::FormatSize(result.bytesCopied) + L")");
-                } else if (result.error.find(L"Пропущен") != std::wstring::npos) {
+                    if (m_onResult)
+                        m_onResult(filePath, true, result.bytesCopied);
+                }
+                else if (isCrcError) {
+                    m_stats.errors++;
+                    Logger::Error(L"CRC32 ошибка! Файл скопирован битым: " + filePath);
+                    if (m_onResult)
+                        m_onResult(filePath, false, result.bytesCopied);
+                }
+                else if (result.error.find(L"Пропущен") != std::wstring::npos) {
                     m_stats.skipped++;
-                } else {
+                }
+                else {
                     m_stats.errors++;
                     Logger::Error(L"Ошибка копирования: " + filePath + L" — " + result.error);
+                    if (m_onResult)
+                        m_onResult(filePath, false, result.bytesCopied);
                 }
             }
-
-            if (m_onResult)
-                m_onResult(filePath, result.success, result.bytesCopied);
         }
     }
 
@@ -118,6 +131,6 @@ private:
     std::unordered_set<std::wstring> m_pending; // для дедупликации
 
     std::thread       m_worker;
-    std::atomic<bool> m_running{false};
+    std::atomic<bool> m_running{ false };
     Stats             m_stats;
 };
