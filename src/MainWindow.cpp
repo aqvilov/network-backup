@@ -132,6 +132,19 @@ static void RemoveTrayIcon() {
     }
 }
 
+static void ShowTrayContextMenu(HWND hWnd) {
+    HMENU hMenu = CreatePopupMenu();
+    AppendMenuW(hMenu, MF_STRING, 1, L"Показать окно");
+    AppendMenuW(hMenu, MF_STRING, 2, L"Выход");
+
+    POINT pt;
+    GetCursorPos(&pt);
+    SetForegroundWindow(hWnd);
+    TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
+    PostMessageW(hWnd, WM_NULL, 0, 0);
+    DestroyMenu(hMenu);
+}
+
 // выбор папки
 static std::wstring PickFolder(HWND owner, const wchar_t* title) {
     wchar_t buf[MAX_PATH] = {};
@@ -517,6 +530,14 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
+        case 1:
+            ShowWindow(hWnd, SW_SHOW);
+            SetForegroundWindow(hWnd);
+            break;
+        case 2:
+            DestroyWindow(hWnd);
+            break;
+
         case ID_BTN_WATCH: {
             std::wstring p = PickFolder(hWnd, L"Папка для слежки");
             if (!p.empty()) {
@@ -535,8 +556,12 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
             break;
         }
-        case ID_BTN_START:    StartBackup(hWnd); break;
-        case ID_BTN_STOP:     StopBackup();      break;
+        case ID_BTN_START:
+            StartBackup(hWnd);
+            break;
+        case ID_BTN_STOP:
+            StopBackup();
+            break;
         case ID_BTN_OPEN_DEST: {
             std::wstring dest = Config::Get(L"destPath");
             if (!dest.empty())
@@ -626,7 +651,14 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 SetForegroundWindow(hWnd);
             }
         }
+        else if (lParam == WM_RBUTTONUP) {
+            ShowTrayContextMenu(hWnd);
+        }
         break;
+
+    case WM_CLOSE:
+        ShowWindow(hWnd, SW_HIDE);
+        return 0;
 
     case WM_DESTROY:
         KillTimer(hWnd, ID_TIMER_UI);
@@ -642,6 +674,11 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
+    HANDLE hMutex = CreateMutexW(NULL, TRUE, L"NetBackup_Mutex");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        MessageBoxW(NULL, L"Программа уже запущена", L"NetBackup", MB_OK);
+        return 0;
+    }
     CoInitialize(nullptr);
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES };
     InitCommonControlsEx(&icc);
@@ -659,6 +696,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     Config::Load(appDir + L"\\config.ini");
 
     Logger::Info(L"=== NetBackup запущен ===");
+
+    NOTIFYICONDATAW nid = {};
+    nid.cbSize = sizeof(NOTIFYICONDATAW);
+    nid.hWnd = NULL;
+    nid.uID = ID_TRAY_ICON;
+    Shell_NotifyIconW(NIM_DELETE, &nid);
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc = WndProc;
