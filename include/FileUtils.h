@@ -9,7 +9,6 @@
 #include <shlobj.h>
 
 namespace fs = std::filesystem;
-
 namespace FileUtils {
 
     struct CopyResultWithCRC {
