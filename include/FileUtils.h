@@ -27,6 +27,26 @@ namespace FileUtils {
         return rel.wstring();
     }
 
+    // Проверка, является ли один путь подпапкой другого
+    inline bool IsSubdirectory(const std::wstring& potentialParent, 
+                               const std::wstring& potentialChild) 
+    {
+        try {
+            fs::path parent = fs::canonical(potentialParent);
+            fs::path child = fs::canonical(potentialChild);
+            
+            // Проверяем, является ли child подпапкой parent
+            auto mismatch_pair = std::mismatch(
+                parent.begin(), parent.end(),
+                child.begin(), child.end()
+            );
+            
+            return mismatch_pair.first == parent.end();
+        } catch (...) {
+            return false;
+        }
+    }
+
     inline CopyResult CopyToBackup(const std::wstring& src,
                                    const std::wstring& watchRoot,
                                    const std::wstring& destDir)
@@ -121,5 +141,64 @@ namespace FileUtils {
         std::wstring result(len, L'\0');
         MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), result.data(), len);
         return result;
+    }
+
+    inline bool IsRootOrProtectedPath(const std::wstring& path) {
+        if (path.empty()) return true;
+        
+        try {
+            fs::path p = fs::absolute(path);
+            std::wstring normalized = p.wstring();
+            
+            // Проверка на корень диска (C:\, D:\ и т.д.)
+            if (normalized.length() <= 3) {
+                return true;
+            }
+            
+            // Проверка на точный корень диска
+            if (normalized.length() == 3 && 
+                normalized[1] == L':' && 
+                normalized[2] == L'\\') {
+                return true;
+            }
+            
+            // Получаем специальные папки Windows
+            wchar_t desktopPath[MAX_PATH];
+            wchar_t documentsPath[MAX_PATH];
+            wchar_t profilePath[MAX_PATH];
+            
+            std::vector<std::wstring> protectedPaths;
+            
+            // Рабочий стол
+            if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_DESKTOP, nullptr, 0, desktopPath))) {
+                protectedPaths.push_back(desktopPath);
+            }
+            
+            // Мои документы
+            if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_MYDOCUMENTS, nullptr, 0, documentsPath))) {
+                protectedPaths.push_back(documentsPath);
+            }
+            
+            // Профиль пользователя
+            if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_PROFILE, nullptr, 0, profilePath))) {
+                protectedPaths.push_back(profilePath);
+            }
+            
+            // Проверяем, не является ли выбранный путь одной из защищенных папок
+            for (const auto& protectedPath : protectedPaths) {
+                try {
+                    fs::path protected_canonical = fs::canonical(protectedPath);
+                    if (fs::equivalent(p, protected_canonical)) {
+                        return true;
+                    }
+                } catch (...) {
+                    // Игнорируем ошибки при проверке отдельных путей
+                }
+            }
+            
+            return false;
+        } catch (...) {
+            return true; // В случае ошибки считаем путь защищенным (безопаснее)
+        }
     }
 }

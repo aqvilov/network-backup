@@ -25,12 +25,10 @@ public:
     ~BackupQueue() { Stop(); }
 
     // Запустить рабочий поток
-    bool Start(const std::wstring& watchRoot, //Сделал бул, чтобы не создавать 2 поток, пока старый будет висеть.
-               const std::wstring& destDir,
+    bool Start(const std::wstring& destDir,
                ResultCallback onResult)
     {
         if (m_worker.joinable()) return false;  // уже запущен
-        m_watchRoot = watchRoot;
         m_destDir   = destDir;
         m_onResult  = onResult;
         m_running   = true;
@@ -43,6 +41,12 @@ public:
         m_cv.notify_all();
         if (m_worker.joinable())
             m_worker.join();
+    }
+
+    // Установить корневые папки для слежки
+    void SetWatchRoots(const std::vector<std::wstring>& watchRoots) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_watchRoots = watchRoots;
     }
 
     // ДОБАВИТЬ В ОЧЕЕРЕДЬ
@@ -70,6 +74,26 @@ public:
     }
 
 private:
+    // Найти подходящий корневой путь для файла
+    std::wstring FindWatchRoot(const std::wstring& filePath) {
+        for (const auto& root : m_watchRoots) {
+            try {
+                fs::path file(filePath);
+                fs::path rootPath(root);
+                
+                // Проверяем, является ли файл подпапкой корневого пути
+                auto rel = fs::relative(file, rootPath);
+                if (!rel.empty() && rel.wstring().find(L"..") == std::wstring::npos) {
+                    return root;
+                }
+            } catch (...) {
+                continue;
+            }
+        }
+        // Если не нашли, возвращаем первый (для обратной совместимости)
+        return m_watchRoots.empty() ? L"" : m_watchRoots[0];
+    }
+
     void WorkerLoop() {
         while (m_running.load()) {
             std::wstring filePath;
@@ -87,7 +111,10 @@ private:
                 m_pending.erase(filePath);
             }
 
-            auto result = FileUtils::CopyToBackup(filePath, m_watchRoot, m_destDir);
+            // Находим подходящий корневой путь
+            std::wstring watchRoot = FindWatchRoot(filePath);
+            
+            auto result = FileUtils::CopyToBackup(filePath, watchRoot, m_destDir);
 
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
@@ -108,7 +135,7 @@ private:
         }
     }
 
-    std::wstring    m_watchRoot;
+    std::vector<std::wstring> m_watchRoots;
     std::wstring    m_destDir;
     ResultCallback  m_onResult;
 
