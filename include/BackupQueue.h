@@ -92,7 +92,7 @@ private:
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
 
-                // Проверяем на ошибку CRC32
+                // реализована проверка на ошибку
                 bool isCrcError = (!result.success && result.error.find(L"CRC32") != std::wstring::npos);
 
                 if (result.success) {
