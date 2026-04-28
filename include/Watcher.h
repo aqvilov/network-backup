@@ -28,6 +28,12 @@ public:
     Watcher() = default;
     ~Watcher() { Stop(); }
 
+    // Запрещаем копирование и перемещение (содержит std::thread, std::mutex)
+    Watcher(const Watcher&) = delete;
+    Watcher& operator=(const Watcher&) = delete;
+    Watcher(Watcher&&) = delete;
+    Watcher& operator=(Watcher&&) = delete;
+
     // Запустить слежку за папкой
     // watchPath  — папка за которой следим
     // recursive  — следить и в подпапках тоже

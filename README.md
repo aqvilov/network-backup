@@ -19,11 +19,24 @@ netbackup-mvp/
     └── tasks.json     — задача сборки
 ```
 
-### Сборка в Visual Studio
+### Сборка проекта
+
+#### Быстрая сборка (рекомендуется) ⚡
+Просто запустите:
+```
+build.bat
+```
+Скрипт автоматически:
+- Инициализирует окружение Visual Studio
+- Скомпилирует проект
+- Создаст `NetBackup.exe`
+
 ---
+
+#### Ручная сборка через Developer Command Prompt
 Для сборки в VS должен быть установлен "Developing Desktop Apps C++"
 
-После этого зайдите в **Developer Command Prompt for VS** и для сборки текущей версии приложения выполните:
+Зайдите в **Developer Command Prompt for VS** и выполните:
 ```
 cd C:\Users\путь\к\вашей\папке
 cl /EHsc /std:c++17 /utf-8 /Fe:NetBackup.exe src\MainWindow.cpp /I include /link comctl32.lib shell32.lib ole32.lib user32.lib gdi32.lib /SUBSYSTEM:WINDOWS
@@ -31,17 +44,17 @@ cl /EHsc /std:c++17 /utf-8 /Fe:NetBackup.exe src\MainWindow.cpp /I include /link
 
 ---
 
-
-### Альтернатива - сборка из командной строки
+#### Альтернатива - сборка из x64 Native Tools Command Prompt
 Открой "x64 Native Tools Command Prompt for VS" из Пуска и выполни:
 ```
 cd путь\до\netbackup-mvp
-cl /EHsc /std:c++17 /Fe:NetBackup.exe src\MainWindow.cpp /I include /link comctl32.lib shell32.lib ole32.lib /SUBSYSTEM:WINDOWS
+cl /EHsc /std:c++17 /utf-8 /Fe:NetBackup.exe src\MainWindow.cpp /I include /link comctl32.lib shell32.lib ole32.lib user32.lib gdi32.lib /SUBSYSTEM:WINDOWS
 ```
 
 ## Что умеет MVP
 
-- Выбор папки для слежки
+- **Множественные папки для слежки** - добавляйте сколько угодно папок для отслеживания
+- Защита от выбора корня диска (C:\, D:\) и системных папок
 - Выбор папки для бэкапа
 - Автоматическое копирование при изменении файлов
 - Сохранение структуры подпапок
