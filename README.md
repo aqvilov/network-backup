@@ -19,17 +19,41 @@ netbackup-mvp/
     └── tasks.json     — задача сборки
 ```
 
-### Сборка проекта
+### Сборка проекта через CMake
 
-#### Быстрая сборка (рекомендуется) ⚡
-Просто запустите:
+```powershell
+git clone <ваш-репозиторий>
+cd NetBackup
+mkdir build && cd build
+cmake .. -G "Visual Studio 18 2026" -A Win32
+cmake --build . --config Release
+
+**Запуск:**
+```powershell
+.\bin\Release\NetBackup.exe
 ```
-build.bat
-```
-Скрипт автоматически:
-- Инициализирует окружение Visual Studio
-- Скомпилирует проект
-- Создаст `NetBackup.exe`
+Добавил новый файл или папку
+Добавь файл в CMakeLists.txt:
+
+cmake
+add_executable(NetBackup WIN32
+    src/mainwindow.cpp
+    src/новый_файл.cpp          # добавь сюда
+)
+Обнови конфигурацию и собери:
+
+powershell
+cd build
+cmake ..                       # обновить
+cmake --build . --config Release
+Добавил целую папку с файлами
+cmake
+# В CMakeLists.txt
+file(GLOB NEW_SOURCES "src/новая_папка/*.cpp")
+add_executable(NetBackup WIN32
+    src/mainwindow.cpp
+    ${NEW_SOURCES}
+)
 
 ---
 
@@ -43,13 +67,6 @@ cl /EHsc /std:c++17 /utf-8 /Fe:NetBackup.exe src\MainWindow.cpp /I include /link
 ```
 
 ---
-
-#### Альтернатива - сборка из x64 Native Tools Command Prompt
-Открой "x64 Native Tools Command Prompt for VS" из Пуска и выполни:
-```
-cd путь\до\netbackup-mvp
-cl /EHsc /std:c++17 /utf-8 /Fe:NetBackup.exe src\MainWindow.cpp /I include /link comctl32.lib shell32.lib ole32.lib user32.lib gdi32.lib /SUBSYSTEM:WINDOWS
-```
 
 ## Что умеет MVP
 
