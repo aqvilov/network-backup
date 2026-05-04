@@ -13,6 +13,8 @@
 #include <sstream>
 #include <atomic>
 #include <stack>
+#include <vector>           
+#include <mutex>           
 
 #include "../include/Logger.h"
 #include "../include/Config.h"
@@ -20,8 +22,8 @@
 #include "../include/Watcher.h"
 #include "../include/BackupQueue.h"
 
-#include <filesystem> //библиотека для работы с файллами и папками
-#include <functional> //для рекурсии
+#include <filesystem> 
+#include <functional> 
 namespace fs = std::filesystem; 
 
 #pragma comment(lib, "comctl32.lib")
@@ -35,19 +37,20 @@ namespace fs = std::filesystem;
 #define ID_BTN_OPEN_DEST  105
 #define ID_LIST           106
 #define ID_TIMER_UI       200
+#define ID_BTN_ERRORS     108   
 
-#define WM_LOG_UPDATE  (WM_USER + 1) 
-#define WM_STATS_UPDATE (WM_USER + 2)
-#define WM_FULLSYNC_UPDATE   (WM_USER + 3) 
-#define WM_START_WATCHER     (WM_USER + 4)
-#define WM_TRAYICON (WM_USER + 5)
+#define WM_LOG_UPDATE     (WM_USER + 1) 
+#define WM_STATS_UPDATE   (WM_USER + 2)
+#define WM_FULLSYNC_UPDATE (WM_USER + 3) 
+#define WM_START_WATCHER  (WM_USER + 4)
+#define WM_TRAYICON       (WM_USER + 5)
+#define WM_UPDATE_ERRORS  (WM_USER + 6)
 
 static Watcher      g_watcher;
 static BackupQueue  g_queue;
-static std::thread g_syncThread;  // вместо detach, чтобы программа не могла обращаться к несуществующим объектам.
-static std::atomic<bool> g_isRunning{false}; //Сделал Атомарным, чтобы небыло неопределенного поведения.
-static std::atomic<bool> g_isFullSyncRunning{false};  //добавил, чтобы не путаться с Арсом фигней сверху. 
-//Флаг, который блокирует повторный запуск синхронизации, когда она уже работает.
+static std::thread g_syncThread;
+static std::atomic<bool> g_isRunning{false};
+static std::atomic<bool> g_isFullSyncRunning{false};
 
 static HWND g_hWnd = nullptr;
 static HWND g_hList = nullptr;
@@ -62,7 +65,23 @@ static HFONT g_hFont = nullptr;
 static NOTIFYICONDATA nid = {};
 static HMENU hTrayMenu = nullptr;
 
-
+struct ErrorEntry {
+    std::wstring path;
+    std::wstring reason;
+};
+static std::vector<ErrorEntry> g_errors;
+static std::mutex g_errorsMutex;    
+static HWND g_hErrorWnd = nullptr;
+static HWND g_hErrorList = nullptr;
+static HWND g_hBtnRetrySel = nullptr;
+static HWND g_hBtnRetryAll = nullptr;
+static void CreateErrorWindow();
+static void ShowErrorWindow();
+static void UpdateErrorList();
+static void ClearErrors();
+static void RetrySelectedError();
+static void RetryAllErrors();
+static LRESULT CALLBACK ErrorWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 // выбор папки
 static std::wstring PickFolder(HWND owner, const wchar_t* title) {
@@ -137,6 +156,8 @@ static void CreateControls(HWND hWnd) {
     g_hBtnStart = MakeButton(L"▶  Старт", 10, 75, 120, 30, (HMENU)ID_BTN_START);
     g_hBtnStop = MakeButton(L"■  Стоп", 140, 75, 120, 30, (HMENU)ID_BTN_STOP);
     g_hBtnOpenDest = MakeButton(L"📁 Открыть бэкап", 280, 75, 150, 30, (HMENU)ID_BTN_OPEN_DEST);
+    // кнопка "Ошибки"
+    MakeButton(L"⚠ Ошибки", 440, 75, 100, 30, (HMENU)ID_BTN_ERRORS);
     EnableWindow(g_hBtnStop, FALSE);
     EnableWindow(g_hBtnOpenDest, FALSE);
 
@@ -190,18 +211,10 @@ static void RemoveTrayIcon() {
 static void FullSync(const std::wstring& watchRoot, const std::wstring& destDir, HWND hWnd) {
     uint64_t fileCount = 0;
 
-    // Вспомогательная лямбда для завершения с ошибкой
     auto finishWithError = [&](const std::wstring& errorMsg) {
         g_isFullSyncRunning.store(false);
-        // Отправляем сообщение об ошибке в UI
         PostMessageW(hWnd, WM_FULLSYNC_UPDATE, (WPARAM)(new std::wstring(L"Ошибка: " + errorMsg)), 0);
-        // Не отправляем WM_START_WATCHER, потому что синхронизация не удалась
         EnableWindow(g_hBtnStart, TRUE);
-        // PostMessageW(hWnd, WM_FULLSYNC_UPDATE, (WPARAM)(new std::wstring(errorMsg)), 0);
-        // // Разблокируем кнопки (вызываем в контексте UI через PostMessage, чтобы избежать гонок)
-        // PostMessageW(hWnd, WM_FULLSYNC_UPDATE, (WPARAM)(new std::wstring(L"Синхронизация прервана")), 0);
-        // EnableWindow(g_hBtnStart, TRUE);
-        // EnableWindow(g_hBtnStop, FALSE);
     };
 
     try {
@@ -211,7 +224,6 @@ static void FullSync(const std::wstring& watchRoot, const std::wstring& destDir,
             return;
         }
 
-        // Итеративный обход с использованием стека (вместо рекурсии)
         std::stack<fs::path> directories;
         directories.push(root);
 
@@ -227,22 +239,18 @@ static void FullSync(const std::wstring& watchRoot, const std::wstring& destDir,
                 }
                 else if (entry.is_regular_file()) {
                     std::wstring src = entry.path().wstring();
-                    // Пропускаем временные/системные
                     std::wstring fname = entry.path().filename().wstring();
                     if (!fname.empty() && fname[0] == L'~') continue;
                     if (fname == L"desktop.ini" || fname == L"thumbs.db") continue;
 
-                    // Проверяем, существует ли файл в бэкапе с тем же размером и временем
                     try {
                         fs::path srcPath(src);
                         fs::path rootPath(watchRoot);
                         fs::path destDirPath(destDir);
                         
-                        // Вычисляем целевой путь
                         std::wstring relative = FileUtils::GetRelativePath(src, watchRoot);
                         fs::path targetPath = destDirPath / relative;
                         
-                        // Если файл существует в бэкапе и имеет тот же размер и время модификации - пропускаем
                         if (fs::exists(targetPath)) {
                             auto srcTime = fs::last_write_time(srcPath);
                             auto targetTime = fs::last_write_time(targetPath);
@@ -250,11 +258,10 @@ static void FullSync(const std::wstring& watchRoot, const std::wstring& destDir,
                             auto targetSize = fs::file_size(targetPath);
                             
                             if (srcSize == targetSize && srcTime == targetTime) {
-                                continue; // Файл уже актуален в бэкапе
+                                continue;
                             }
                         }
                     } catch (...) {
-                        // Если ошибка при проверке - всё равно добавляем в очередь
                     }
 
                     g_queue.Enqueue(src);
@@ -269,23 +276,19 @@ static void FullSync(const std::wstring& watchRoot, const std::wstring& destDir,
         }
 
         if (!g_isFullSyncRunning.load()) {
-            // Синхронизация была прервана пользователем
             finishWithError(L"Синхронизация прервана пользователем");
             return;
         }
 
-        // Успешное завершение
         wchar_t finalMsg[256];
-        swprintf_s(finalMsg, L"Сканирование завершено. Файлов добавлено в очередь: %llu",
-                   fileCount);
+        swprintf_s(finalMsg, L"Сканирование завершено. Файлов добавлено в очередь: %llu", fileCount);
         Logger::Info(finalMsg);
         g_isFullSyncRunning.store(false);
         PostMessageW(hWnd, WM_FULLSYNC_UPDATE, (WPARAM)(new std::wstring(finalMsg)), 0);
-        Sleep(100); // небольшая задержка для обработки сообщений
+        Sleep(100);
         PostMessageW(hWnd, WM_START_WATCHER, 0, 0);
     }
     catch (const std::exception& e) {
-        // Используем корректное преобразование UTF-8 -> wstring
         std::wstring err = L"Исключение: " + FileUtils::Utf8ToWide(e.what());
         Logger::Error(err);
         finishWithError(err);
@@ -318,17 +321,19 @@ static void StartBackup(HWND hWnd) {
         MessageBoxW(hWnd, L"Папка назначения не существует", L"Ошибка", MB_ICONERROR);
         return;
     }
-    //Нельзя повтроить запуск, если запучщенно
-    if (g_isFullSyncRunning.load() || g_isRunning.load()) return; //Сделал Атомарными
+    if (g_isFullSyncRunning.load() || g_isRunning.load()) return;
     
     if (g_syncThread.joinable())
         g_syncThread.join();
 
+    //очищаем список старых ошибок при новом запуске
+    ClearErrors();
+
     g_isFullSyncRunning.store(true);
 
-    if (!g_queue.Start(watch, dest, [](const std::wstring& path, bool ok, uint64_t bytes) {
-        struct Payload { std::wstring path; bool ok; uint64_t bytes; };
-        auto* p = new Payload{ path, ok, bytes };
+    if (!g_queue.Start(watch, dest, [](const std::wstring& path, bool ok, uint64_t bytes, const std::wstring& errorMsg) {
+        struct Payload { std::wstring path; bool ok; uint64_t bytes; std::wstring reason; };
+        auto* p = new Payload{ path, ok, bytes, errorMsg };
         PostMessageW(g_hWnd, WM_LOG_UPDATE, (WPARAM)p, 0);
     })) {
         MessageBoxW(hWnd, L"Не удалось запустить очередь копирования", L"Ошибка", MB_ICONERROR);
@@ -336,34 +341,20 @@ static void StartBackup(HWND hWnd) {
         return;
     }
 
-    //Блокируем остальные кнопки на время синхронизации.
     EnableWindow(g_hBtnStart, FALSE);
     EnableWindow(g_hBtnStop, FALSE);
     SetWindowTextW(g_hLblStatus, L"Выполняется первоначальная синхронизация...");
 
-    //Запускаем поток, но не detach
     g_syncThread = std::thread([hWnd, watch, dest]() {
         FullSync(watch, dest, hWnd);
     });
-
-    /// Запускаем поток полной синхронизации
-    //std::thread syncThread([hWnd, watch, dest]() 
-    //{
-    //  FullSync(watch, dest, hWnd);
-    //});
-    ///syncThread.detach(); 
-
-    //Решил убрать здесь Wather и Queue запуск, пусть отдельно будет лучше.
 }
 
-static void ActuallyStartWatcher() // функия Арса, просто отдельно.
-{
+static void ActuallyStartWatcher() {
     Logger::Info(L"[DEBUG] ActuallyStartWatcher вызвана");
     
-    // Сброс флага синхронизации, т.к. мы переходим к обычному режиму
     g_isFullSyncRunning.store(false);
     
-    // Убедимся, что g_isRunning правильно инициализирован
     if (g_isRunning.load()) {
         Logger::Info(L"[DEBUG] Watcher уже запущен, выходим");
         return;
@@ -404,17 +395,15 @@ static void ActuallyStartWatcher() // функия Арса, просто отд
 }
 
 static void StopBackup() {
-    //Если идет синк, то прерываем ее.
     if (g_isFullSyncRunning.load()) 
     {
-        g_isFullSyncRunning.store(false);         // поток FullSync увидит и выйдет
+        g_isFullSyncRunning.store(false);
         if (g_syncThread.joinable())
-            g_syncThread.join(); //ждем завершения
+            g_syncThread.join();
     }
     
     if (g_syncThread.joinable())
         g_syncThread.join();
-    
     
     g_watcher.Stop();
     g_queue.Stop();
@@ -428,15 +417,157 @@ static void StopBackup() {
     Logger::Info(L"Остановлено.");
 }
 
+// оконная процедура для окна ошибок
+static LRESULT CALLBACK ErrorWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CREATE:
+        {
+            g_hErrorList = CreateWindowW(WC_LISTVIEWW, L"",
+                WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT | LVS_SINGLESEL,
+                10, 10, 460, 250, hWnd, nullptr, nullptr, nullptr);
+            LVCOLUMNW col = {};
+            col.mask = LVCF_TEXT | LVCF_WIDTH;
+            col.cx = 200;
+            col.pszText = (LPWSTR)L"Файл";
+            ListView_InsertColumn(g_hErrorList, 0, &col);
+            col.cx = 260;
+            col.pszText = (LPWSTR)L"Причина";
+            ListView_InsertColumn(g_hErrorList, 1, &col);
+            
+            // Кнопки
+            g_hBtnRetrySel = CreateWindowW(L"BUTTON", L"Повторить выбранное",
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                10, 270, 150, 30, hWnd, (HMENU)1, nullptr, nullptr);
+            g_hBtnRetryAll = CreateWindowW(L"BUTTON", L"Повторить все",
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                170, 270, 130, 30, hWnd, (HMENU)2, nullptr, nullptr);
+            
+            UpdateErrorList();
+        }
+        break;
+        
+    case WM_SIZE:
+        {
+            RECT rc;
+            GetClientRect(hWnd, &rc);
+            SetWindowPos(g_hErrorList, nullptr, 10, 10, rc.right-20, rc.bottom-70, SWP_NOZORDER);
+            SetWindowPos(g_hBtnRetrySel, nullptr, 10, rc.bottom-50, 150, 30, SWP_NOZORDER);
+            SetWindowPos(g_hBtnRetryAll, nullptr, 170, rc.bottom-50, 130, 30, SWP_NOZORDER);
+        }
+        break;
+        
+    case WM_COMMAND:
+        switch (LOWORD(wParam)) {
+        case 1:
+            RetrySelectedError();
+            break;
+        case 2:
+            RetryAllErrors();
+            break;
+        }
+        break;
+        
+    case WM_UPDATE_ERRORS:
+        UpdateErrorList();
+        break;
+        
+    case WM_DESTROY:
+        g_hErrorWnd = nullptr;
+        g_hErrorList = nullptr;
+        break;
+        
+    default:
+        return DefWindowProcW(hWnd, msg, wParam, lParam);
+    }
+    return 0;
+}
 
-//КАЛЛ БЕК
+static void CreateErrorWindow() {
+    if (g_hErrorWnd && IsWindow(g_hErrorWnd)) {
+        ShowWindow(g_hErrorWnd, SW_SHOW);
+        SetForegroundWindow(g_hErrorWnd);
+        return;
+    }
+    g_hErrorWnd = CreateWindowW(L"NetBackupErrorWindow", L"Список ошибок",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_SIZEBOX,
+        CW_USEDEFAULT, CW_USEDEFAULT, 500, 350,
+        nullptr, nullptr, GetModuleHandle(nullptr), nullptr);
+    ShowWindow(g_hErrorWnd, SW_SHOW);
+}
+
+static void ShowErrorWindow() {
+    if (!g_hErrorWnd || !IsWindow(g_hErrorWnd))
+        CreateErrorWindow();
+    else {
+        ShowWindow(g_hErrorWnd, SW_SHOW);
+        SetForegroundWindow(g_hErrorWnd);
+    }
+}
+
+static void UpdateErrorList() {
+    if (!g_hErrorList) return;
+    ListView_DeleteAllItems(g_hErrorList);
+    
+    std::lock_guard<std::mutex> lock(g_errorsMutex);
+    int idx = 0;
+    for (const auto& err : g_errors) {
+        LVITEMW item = {};
+        item.mask = LVIF_TEXT;
+        item.iItem = idx;
+        item.pszText = (LPWSTR)err.path.c_str();
+        ListView_InsertItem(g_hErrorList, &item);
+        ListView_SetItemText(g_hErrorList, idx, 1, (LPWSTR)err.reason.c_str());
+        ++idx;
+    }
+}
+
+static void ClearErrors() {
+    {
+        std::lock_guard<std::mutex> lock(g_errorsMutex);
+        g_errors.clear();
+    }
+    UpdateErrorList();
+}
+
+static void RetrySelectedError() {
+    if (!g_hErrorList) return;
+    int sel = ListView_GetNextItem(g_hErrorList, -1, LVNI_SELECTED);
+    if (sel == -1) return;
+    
+    std::wstring path;
+    {
+        std::lock_guard<std::mutex> lock(g_errorsMutex);
+        if (sel < (int)g_errors.size()) {
+            path = g_errors[sel].path;
+            g_errors.erase(g_errors.begin() + sel);
+        }
+    }
+    if (!path.empty()) {
+        g_queue.Enqueue(path);
+        UpdateErrorList();
+    }
+}
+
+static void RetryAllErrors() {
+    std::vector<std::wstring> paths;
+    {
+        std::lock_guard<std::mutex> lock(g_errorsMutex);
+        for (const auto& err : g_errors)
+            paths.push_back(err.path);
+        g_errors.clear();
+    }
+    for (const auto& p : paths)
+        g_queue.Enqueue(p);
+    UpdateErrorList();
+}
+
+// КАЛЛ БЕК главного окна
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
 
     case WM_CREATE:
         g_hWnd = hWnd;
         CreateControls(hWnd);
-        // Таймер обновления статистики каждые 500ms
         SetTimer(hWnd, ID_TIMER_UI, 500, nullptr);
         CreateTrayMenu(hWnd);
         AddTrayIcon(hWnd);
@@ -465,7 +596,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
-
         case ID_BTN_WATCH: {
             std::wstring p = PickFolder(hWnd, L"Папка для слежки");
             if (!p.empty()) {
@@ -492,6 +622,9 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 ShellExecuteW(nullptr, L"open", dest.c_str(), nullptr, nullptr, SW_SHOW);
             break;
         }
+        case ID_BTN_ERRORS:
+            ShowErrorWindow();
+            break;
         case 1:
             ShowWindow(hWnd, SW_RESTORE);
             SetForegroundWindow(hWnd);
@@ -506,12 +639,9 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         break;
 
-
     case WM_LOG_UPDATE: {
-        struct Payload { std::wstring path; bool ok; uint64_t bytes; };
+        struct Payload { std::wstring path; bool ok; uint64_t bytes; std::wstring reason; };
         auto* p = reinterpret_cast<Payload*>(wParam);
-
-
         SYSTEMTIME st;
         GetLocalTime(&st);
         wchar_t timeBuf[16];
@@ -536,6 +666,24 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         if (row > 500) ListView_DeleteItem(g_hList, 0);
 
+        //если ошибка, добавляем в список ошибок (без дублей)
+        if (!p->ok) {
+            std::lock_guard<std::mutex> lock(g_errorsMutex);
+            bool exists = false;
+            for (const auto& e : g_errors) {
+                if (e.path == p->path && e.reason == p->reason) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) {
+                g_errors.push_back({p->path, p->reason});
+                if (g_hErrorWnd && IsWindow(g_hErrorWnd)) {
+                    PostMessage(g_hErrorWnd, WM_UPDATE_ERRORS, 0, 0);
+                }
+            }
+        }
+
         delete p;
         break;
     }
@@ -549,7 +697,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         break;
     }
 
-    //Обнолвение Полной синхронизации
     case WM_FULLSYNC_UPDATE:   
     {
         std::wstring* msg = (std::wstring*)wParam;
@@ -557,7 +704,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         delete msg;
         break;
     }
-    //Иницализация Watchera крч
+
     case WM_START_WATCHER: 
     {
         ActuallyStartWatcher();
@@ -580,10 +727,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     CoInitialize(nullptr);
 
-    // Проверка на единственный экземпляр
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"NetBackup_SingleInstance");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        // Приложение уже запущено - активируем существующее окно
         HWND hExisting = FindWindowW(L"NetBackupMVP", nullptr);
         if (hExisting) {
             ShowWindow(hExisting, SW_RESTORE);
@@ -597,7 +742,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES };
     InitCommonControlsEx(&icc);
 
-    // Папка настроек %APPDATA%\NetBackup
     std::wstring appDir = FileUtils::GetAppDataDir();
     CreateDirectoryW(appDir.c_str(), nullptr);
 
@@ -605,12 +749,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         MessageBoxW(nullptr, L"Не удалось создать папку для настроек", L"Ошибка", MB_ICONERROR);
     }
 
-    // Инициализация логгера и конфига
     Logger::Init(appDir + L"\\backup.log");
     Config::Load(appDir + L"\\config.ini");
 
     Logger::Info(L"=== NetBackup запущен ===");
-
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc = WndProc;
@@ -621,7 +763,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
     RegisterClassW(&wc);
 
-    // создаём окно
+    WNDCLASSW wcErrors = {};
+    wcErrors.lpfnWndProc = ErrorWndProc;
+    wcErrors.hInstance = hInstance;
+    wcErrors.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wcErrors.lpszClassName = L"NetBackupErrorWindow";
+    wcErrors.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    RegisterClassW(&wcErrors);
+
     HWND hWnd = CreateWindowW(
         L"NetBackupMVP",
         L"NetBackup — Локальное хранение",
@@ -634,7 +783,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);
 
-    // мейн цикл
     MSG msg = {};
     while (GetMessageW(&msg, nullptr, 0, 0)) {
         TranslateMessage(&msg);
