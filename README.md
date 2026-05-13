@@ -19,11 +19,48 @@ netbackup-mvp/
     └── tasks.json     — задача сборки
 ```
 
-### Сборка в Visual Studio
+### Сборка проекта через CMake
+
+```powershell
+git clone <ваш-репозиторий>
+cd NetBackup
+mkdir build && cd build
+cmake .. -G "Visual Studio 18 2026" -A Win32
+cmake --build . --config Release
+
+**Запуск:**
+```powershell
+.\bin\Release\NetBackup.exe
+```
+Добавил новый файл или папку
+Добавь файл в CMakeLists.txt:
+
+cmake
+add_executable(NetBackup WIN32
+    src/mainwindow.cpp
+    src/новый_файл.cpp          # добавь сюда
+)
+Обнови конфигурацию и собери:
+
+powershell
+cd build
+cmake ..                       # обновить
+cmake --build . --config Release
+Добавил целую папку с файлами
+cmake
+# В CMakeLists.txt
+file(GLOB NEW_SOURCES "src/новая_папка/*.cpp")
+add_executable(NetBackup WIN32
+    src/mainwindow.cpp
+    ${NEW_SOURCES}
+)
+
 ---
+
+#### Ручная сборка через Developer Command Prompt
 Для сборки в VS должен быть установлен "Developing Desktop Apps C++"
 
-После этого зайдите в **Developer Command Prompt for VS** и для сборки текущей версии приложения выполните:
+Зайдите в **Developer Command Prompt for VS** и выполните:
 ```
 cd C:\Users\путь\к\вашей\папке
 cl /EHsc /std:c++17 /utf-8 /Fe:NetBackup.exe src\MainWindow.cpp /I include /link comctl32.lib shell32.lib ole32.lib user32.lib gdi32.lib /SUBSYSTEM:WINDOWS
@@ -31,18 +68,11 @@ cl /EHsc /std:c++17 /utf-8 /Fe:NetBackup.exe src\MainWindow.cpp /I include /link
 
 ---
 
-
-### Альтернатива - сборка из командной строки
-Открой "x64 Native Tools Command Prompt for VS" из Пуска и выполни:
-```
-cd путь\до\netbackup-mvp
-cl /EHsc /std:c++17 /Fe:NetBackup.exe src\MainWindow.cpp /I include /link comctl32.lib shell32.lib ole32.lib /SUBSYSTEM:WINDOWS
-```
-
 ## Что умеет MVP
 
-- Выбор папки для слежки
-- Выбор папки для бэкапа
+- **Множественные папки для слежки** - добавляйте сколько угодно папок для отслеживания
+- Защита от выбора корня диска (C:\, D:\) и системных папок
+- Выбор нескольких папок для бэкапа
 - Автоматическое копирование при изменении файлов
 - Сохранение структуры подпапок
 - Журнал событий с временем
@@ -54,6 +84,5 @@ cl /EHsc /std:c++17 /Fe:NetBackup.exe src\MainWindow.cpp /I include /link comctl
 ## next feat::
 
 После того как локальный бэкап работает, добавим загрузку в Google Drive:
-- Регистрация приложения в Google Cloud Console
 - OAuth2 авторизация
 - Загрузка через Google Drive REST API

@@ -5,13 +5,10 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <string>
+#include <vector>
 #include <unordered_map>
-#include <unordered_set>
-#include <mutex>
 #include <fstream>
 #include <sstream>
-#include <cctype>      // для towlower
-#include <algorithm>
 
 class Config {
 public:
@@ -31,8 +28,6 @@ public:
             std::wstring val = line.substr(pos + 1);
             s_data[key] = val;
         }
-        //После загрузки словаря, обновляем список игнорируемых расширений
-        LoadIgnoredFromConfig();
         return true;
     }
 
@@ -46,72 +41,63 @@ public:
         return true;
     }
 
-    static void Set(const std::wstring& key, const std::wstring& val) { s_data[key] = val; }
+    static void        Set(const std::wstring& key, const std::wstring& val) { s_data[key] = val; }
     static std::wstring Get(const std::wstring& key, const std::wstring& def = L"") {
         auto it = s_data.find(key);
         return it != s_data.end() ? it->second : def;
     }
     static bool Has(const std::wstring& key) { return s_data.count(key) > 0; }
 
-    static void SetIgnoredExtensions(const std::wstring& extList) 
-    {
-        std::lock_guard<std::mutex> lock(s_mutex);
-        Set(L"ignoredExtensions", extList);
-        Save();                     // сразу сохраняем в файл
-        ParseExtList(extList, s_ignoredExts);
-    }
-
-    static bool IsExtensionIgnored(const std::wstring& filename) 
-    {
-        std::lock_guard<std::mutex> lock(s_mutex);
-        if (s_ignoredExts.empty()) return false;
-        size_t dot = filename.find_last_of(L'.');
-        if (dot == std::wstring::npos) return false;
-        std::wstring ext = filename.substr(dot + 1);
-        for (auto& c : ext) c = towlower(c);
-        return s_ignoredExts.count(ext) > 0;
-    }
-
-private:
-    static void LoadIgnoredFromConfig() 
-    {
-        std::wstring list = Get(L"ignoredExtensions", L"");
-        ParseExtList(list, s_ignoredExts);
-    }
-
-    static void ParseExtList(const std::wstring& list,
-                             std::unordered_set<std::wstring>& outSet) {
-        outSet.clear();
-        if (list.empty()) return;
-        // Разделители: пробел, запятая, точка с запятой
-        std::wistringstream iss(list);
-        std::wstring token;
-        while (iss >> token) {
-            // Дополнительное разбиение по запятым и точкам с запятой внутри токена
-            size_t start = 0, end;
-            while ((end = token.find_first_of(L",;", start)) != std::wstring::npos) {
-                std::wstring ext = token.substr(start, end - start);
-                NormalizeExtension(ext);
-                if (!ext.empty()) outSet.insert(ext);
-                start = end + 1;
-            }
-            std::wstring ext = token.substr(start);
-            NormalizeExtension(ext);
-            if (!ext.empty()) outSet.insert(ext);
+    // Методы для работы с массивом путей слежки
+    static void SetWatchPaths(const std::vector<std::wstring>& paths) {
+        // Удаляем старые пути
+        ClearWatchPaths();
+        // Сохраняем новые
+        for (size_t i = 0; i < paths.size(); ++i) {
+            s_data[L"watchPath_" + std::to_wstring(i)] = paths[i];
         }
     }
 
-    static void NormalizeExtension(std::wstring& ext) {
-        if (ext.empty()) return;
-        // Удаляем начальную точку и звёздочку
-        if (ext[0] == L'.') ext.erase(0, 1);
-        if (!ext.empty() && ext[0] == L'*') ext.erase(0, 1);
-        // Приводим к нижнему регистру
-        for (auto& c : ext) c = towlower(c);
+    static std::vector<std::wstring> GetWatchPaths() {
+        std::vector<std::wstring> result;
+        for (size_t i = 0; ; ++i) {
+            std::wstring key = L"watchPath_" + std::to_wstring(i);
+            if (!Has(key)) break;
+            std::wstring path = Get(key);
+            if (!path.empty()) {
+                result.push_back(path);
+            }
+        }
+        return result;
     }
 
-    static inline std::mutex s_mutex;
+    static void AddWatchPath(const std::wstring& path) {
+        auto paths = GetWatchPaths();
+        paths.push_back(path);
+        SetWatchPaths(paths);
+    }
+
+    static void RemoveWatchPath(size_t index) {
+        auto paths = GetWatchPaths();
+        if (index < paths.size()) {
+            paths.erase(paths.begin() + index);
+            SetWatchPaths(paths);
+        }
+    }
+
+    static void ClearWatchPaths() {
+        // Удаляем все ключи вида watchPath_N
+        auto it = s_data.begin();
+        while (it != s_data.end()) {
+            if (it->first.rfind(L"watchPath_", 0) == 0) {
+                it = s_data.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+private:
     static inline std::wstring s_path;
     static inline std::unordered_map<std::wstring, std::wstring> s_data;
-    static inline std::unordered_set<std::wstring> s_ignoredExts;
 };
