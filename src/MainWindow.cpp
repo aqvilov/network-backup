@@ -670,6 +670,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     Logger::Init(appDir + L"\\backup.log");
     Config::Load(appDir + L"\\config.ini");
 
+    if (!Config::Has(L"maxVersions")) Config::Set(L"maxVersions", L"5");
+    if (!Config::Has(L"versionedExtensions")) Config::Set(L"versionedExtensions",
+        L".docx,.xlsx,.txt,.pdf,.cpp,.h,.hpp,.c,.cc,.cs,.java,.py,.js,.xml,.json,.md");
+    Config::Save();
+
     Logger::Info(L"=== NetBackup запущен ===");
 
 

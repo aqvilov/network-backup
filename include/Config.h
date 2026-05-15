@@ -97,6 +97,87 @@ public:
         }
     }
 
+    
+    static int GetMaxVersions() 
+    {
+        std::wstring val = Get(L"maxVersions", L"5");
+        return _wtoi(val.c_str());
+    }
+
+    static void SetMaxVersions(int n) 
+    {
+        Set(L"maxVersions", std::to_wstring(n));
+    }
+
+    static std::vector<std::wstring> GetVersionedExtensions() 
+    {
+        std::vector<std::wstring> exts;
+        std::wstring val = Get(L"versionedExtensions", 
+            L".docx,.xlsx,.txt,.pdf,.cpp,.h,.hpp,.c,.cc,.cs,.java,.py,.js,.xml,.json,.md");
+        std::wstringstream ss(val);
+        std::wstring item;
+        while (std::getline(ss, item, L',')) {
+            if (!item.empty()) exts.push_back(item);
+        }
+        return exts;
+    }
+
+    static bool IsVersionedExtension(const std::wstring& filename) 
+    {
+        size_t dot = filename.find_last_of(L'.');
+        if (dot == std::wstring::npos) return false;
+        std::wstring ext = filename.substr(dot);
+        for (auto& c : ext) c = towlower(c);
+        auto exts = GetVersionedExtensions();
+        for (const auto& e : exts) {
+            std::wstring lowerExt = e;
+            for (auto& c : lowerExt) c = towlower(c);
+            if (ext == lowerExt) return true;
+        }
+        return false;
+    }
+
+    //Игнорирование расширений
+    static void SetIgnoredExtensions(const std::vector<std::wstring>& exts) 
+    {
+        // очистить старые
+        auto it = s_data.begin();
+        while (it != s_data.end()) {
+            if (it->first.rfind(L"ignoreExt_", 0) == 0)
+                it = s_data.erase(it);
+            else ++it;
+        }
+        for (size_t i = 0; i < exts.size(); ++i)
+            s_data[L"ignoreExt_" + std::to_wstring(i)] = exts[i];
+    }
+
+    static std::vector<std::wstring> GetIgnoredExtensions() 
+    {
+        std::vector<std::wstring> result;
+        for (size_t i = 0; ; ++i) {
+            std::wstring key = L"ignoreExt_" + std::to_wstring(i);
+            if (!Has(key)) break;
+            std::wstring ext = Get(key);
+            if (!ext.empty()) result.push_back(ext);
+        }
+        return result;
+    }
+
+    static bool IsExtensionIgnored(const std::wstring& filename) 
+    {
+        size_t dot = filename.find_last_of(L'.');
+        if (dot == std::wstring::npos) return false;
+        std::wstring ext = filename.substr(dot);
+        for (auto& c : ext) c = towlower(c);
+        auto ignored = GetIgnoredExtensions();
+        for (const auto& ign : ignored) {
+            std::wstring lowerIgn = ign;
+            for (auto& c : lowerIgn) c = towlower(c);
+            if (ext == lowerIgn) return true;
+        }
+        return false;
+    }
+
 private:
     static inline std::wstring s_path;
     static inline std::unordered_map<std::wstring, std::wstring> s_data;
