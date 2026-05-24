@@ -19,6 +19,8 @@
 #include "../include/FileUtils.h"
 #include "../include/Watcher.h"
 #include "../include/BackupQueue.h"
+#include "../include/GoogleAuth.h"
+#include "../include/GoogleDriveUploader.h"
 
 #include <filesystem>
 #include <functional>
@@ -37,12 +39,15 @@ namespace fs = std::filesystem;
 #define ID_BTN_OPEN_DEST  106
 #define ID_LIST_WATCH     107
 #define ID_LIST           108
+#define ID_BTN_GOOGLE_LOGIN   110
+#define ID_BTN_DRIVE_TOGGLE   111
 #define ID_TIMER_UI       200
 
 #define WM_LOG_UPDATE  (WM_USER + 1) 
 #define WM_STATS_UPDATE (WM_USER + 2)
 #define WM_FULLSYNC_UPDATE   (WM_USER + 3) 
 #define WM_START_WATCHER     (WM_USER + 4)
+
 
 static std::vector<std::unique_ptr<Watcher>> g_watchers;
 static BackupQueue  g_queue;
@@ -63,6 +68,8 @@ static HWND g_hBtnWatchAdd = nullptr;
 static HWND g_hBtnWatchRemove = nullptr;
 static HFONT g_hFont = nullptr;
 
+static bool g_uploadToDrive = false;
+static HWND g_hBtnDriveToggle = nullptr;
 
 
 // выбор папки
@@ -168,6 +175,20 @@ static void CreateControls(HWND hWnd) {
     g_hBtnOpenDest = MakeButton(L"📁 Открыть бэкап", 280, 158, 150, 30, (HMENU)ID_BTN_OPEN_DEST);
     EnableWindow(g_hBtnStop, FALSE);
     EnableWindow(g_hBtnOpenDest, FALSE);
+
+
+    // Кнопка входа в Google
+    HWND hBtnGoogle = CreateWindowW(L"BUTTON", L"🔑 Гугл",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        440, 158, 100, 30, hWnd, (HMENU)ID_BTN_GOOGLE_LOGIN, nullptr, nullptr);
+    SendMessageW(hBtnGoogle, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+
+    // Кнопка включения Drive
+    g_hBtnDriveToggle = CreateWindowW(L"BUTTON", L"☁️ Облако выключенно",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        550, 158, 70, 30, hWnd, (HMENU)ID_BTN_DRIVE_TOGGLE, nullptr, nullptr);
+    SendMessageW(g_hBtnDriveToggle, WM_SETFONT, (WPARAM)g_hFont, TRUE);
+    EnableWindow(g_hBtnDriveToggle, FALSE);
 
     //статус
     g_hLblStatus = MakeLabel(L"Ожидание...", 10, 198, 565, 20);
@@ -368,6 +389,9 @@ static void StartBackup(HWND hWnd) {
 
     // Устанавливаем корневые папки для очереди
     g_queue.SetWatchRoots(watchPaths);
+
+    g_queue.EnableGoogleDriveUpload(g_uploadToDrive);
+    g_queue.SetGoogleDriveParentFolder(L""); // корень
 
     EnableWindow(g_hBtnStart, FALSE);
     EnableWindow(g_hBtnStop, FALSE);
@@ -580,6 +604,45 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 ShellExecuteW(nullptr, L"open", dest.c_str(), nullptr, nullptr, SW_SHOW);
             break;
         }
+
+        case ID_BTN_GOOGLE_LOGIN: 
+        {
+            // Замените YOUR_CLIENT_ID и YOUR_CLIENT_SECRET на реальные из Google Cloud Console
+            static bool initialized = false;
+            if (!initialized) 
+            {
+                GoogleAuth::Initialize(L"678345911314-4o81mhbqq3l3u6cqt2q00cqdtqr21h29.apps.googleusercontent.com", L"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");
+                initialized = true;
+            }
+            GoogleAuth::Authorize([](bool success, const GoogleTokens& tokens) 
+            {
+                if (success) 
+                {
+                    GoogleDriveUploader::SetAccessToken(tokens.access_token);
+                    MessageBoxW(g_hWnd, L"Авторизация успешна!", L"Google", MB_OK);
+                    EnableWindow(g_hBtnDriveToggle, TRUE);
+                    g_uploadToDrive = true;
+                    SetWindowTextW(g_hBtnDriveToggle, L"☁️ Облако включенно");
+                    if (g_isRunning.load())
+                        g_queue.EnableGoogleDriveUpload(true);
+                } 
+                else 
+                {
+                    MessageBoxW(g_hWnd, L"Ошибка авторизации", L"Google", MB_ICONERROR);
+                }
+            });
+            break;
+        }
+        case ID_BTN_DRIVE_TOGGLE: {
+            g_uploadToDrive = !g_uploadToDrive;
+            SetWindowTextW(g_hBtnDriveToggle, g_uploadToDrive ? L"☁️ Облако включенно" : L"☁️ Облако выключенно");
+            if (g_isRunning.load()) {
+                g_queue.EnableGoogleDriveUpload(g_uploadToDrive);
+                g_queue.SetGoogleDriveParentFolder(L"");  // корневая папка
+            }
+            break;
+        }
+
         }
         break;
 
@@ -644,6 +707,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_DESTROY:
         KillTimer(hWnd, ID_TIMER_UI);
         if (g_isRunning) StopBackup();
+        Config::Set(L"drive_enabled", g_uploadToDrive ? L"1" : L"0");
+        Config::Save();
         PostQuitMessage(0);
         break;
 
@@ -699,6 +764,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
 
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);
+
+    // Восстановление Google авторизации
+    std::wstring refresh = GoogleAuth::GetStoredRefreshToken();
+    if (!refresh.empty()) 
+    {
+        // Те же Client ID/Secret, что и выше
+        GoogleAuth::Initialize(L"678345911314-4o81mhbqq3l3u6cqt2q00cqdtqr21h29.apps.googleusercontent.com", L"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");
+        GoogleTokens tokens;
+        if (GoogleAuth::RefreshAccessToken(refresh, tokens)) 
+        {
+            GoogleDriveUploader::SetAccessToken(tokens.access_token);
+            // Загрузить сохранённое состояние Drive из конфига (опционально)
+            g_uploadToDrive = (Config::Get(L"drive_enabled", L"0") == L"1");
+            if (g_uploadToDrive)
+                SetWindowTextW(g_hBtnDriveToggle, L"☁️ Облако включенно");
+            EnableWindow(g_hBtnDriveToggle, TRUE);
+        }
+    }
 
     // мейн цикл
     MSG msg = {};

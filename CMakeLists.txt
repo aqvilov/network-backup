@@ -6,6 +6,28 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Подключение vcpkg
+if(DEFINED ENV{VCPKG_ROOT} AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
+endif()
+
+# FetchContent для библиотек
+include(FetchContent)
+
+# nlohmann/json
+FetchContent_Declare(json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG v3.11.2
+)
+FetchContent_MakeAvailable(json)
+
+# cpp-httplib
+FetchContent_Declare(httplib
+    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+    GIT_TAG v0.15.3
+)
+FetchContent_MakeAvailable(httplib)
+
 if(WIN32)
 
     add_definitions(-DUNICODE -D_UNICODE)
@@ -21,6 +43,8 @@ endif()
 add_executable(NetBackup WIN32
     src/MainWindow.cpp
     
+    src/GoogleAuth.cpp
+    src/GoogleDriverUpLoader.cpp
 
     include/Logger.h
     include/Config.h
@@ -32,6 +56,8 @@ add_executable(NetBackup WIN32
 
 target_include_directories(NetBackup PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${nlohmann_json_SOURCE_DIR}/include   # для <nlohmann/json.hpp>
+    ${httplib_SOURCE_DIR}                 # для <httplib.h>
 )
 
 
@@ -39,7 +65,16 @@ target_link_libraries(NetBackup
     comctl32   
     shell32    
     ole32       # COM (CoInitialize/CoUninitialize)
+    ssl crypto #Для https
 )
+
+# Если используете MSVC, может понадобиться явно указать библиотеки для OpenSSL
+if(MSVC)
+    target_link_libraries(NetBackup
+        libssl.lib
+        libcrypto.lib
+    )
+endif()
 
 
 if(MINGW)

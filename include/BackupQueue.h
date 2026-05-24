@@ -2,6 +2,7 @@
 //очередь задач на копирование
 
 #define WIN32_LEAN_AND_MEAN
+#include "GoogleDriveUploader.h"
 #include <windows.h>
 #include <string>
 #include <queue>
@@ -73,6 +74,18 @@ public:
         return s;
     }
 
+    void EnableGoogleDriveUpload(bool enable) 
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_uploadToDrive = enable;
+    }
+
+    void SetGoogleDriveParentFolder(const std::wstring& folderId) 
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_driveParentFolderId = folderId;
+    }
+
 private:
     // Найти подходящий корневой путь для файла
     std::wstring FindWatchRoot(const std::wstring& filePath) {
@@ -129,6 +142,30 @@ private:
                     Logger::Error(L"Ошибка копирования: " + filePath + L" — " + result.error);
                 }
             }
+            
+                        // Загрузка в Google Drive (если включено)
+            bool uploadEnabled;
+            std::wstring parentFolder;
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                uploadEnabled = m_uploadToDrive;
+                parentFolder = m_driveParentFolderId;
+            }
+            if (uploadEnabled && result.success) 
+            {
+                GoogleDriveUploader::UploadFile(filePath, parentFolder,
+                    [](const std::wstring& path, const UploadResult& res) 
+                    {
+                        if (res.success) 
+                        {
+                            Logger::Info(L"[Google Drive] Загружен: " + path);
+                        } 
+                        else 
+                        {
+                            Logger::Error(L"[Google Drive] Ошибка " + path + L": " + res.errorMsg);
+                        }
+                    });
+            }
 
             if (m_onResult)
                 m_onResult(filePath, result.success, result.bytesCopied);
@@ -147,4 +184,7 @@ private:
     std::thread       m_worker;
     std::atomic<bool> m_running{false};
     Stats             m_stats;
+
+    bool m_uploadToDrive = false;
+    std::wstring m_driveParentFolderId;
 };
