@@ -11,6 +11,7 @@
 #include <chrono>
 #include <iomanip>
 #include <sstream>
+#include <filesystem>
 
 class Logger {
 public:
@@ -19,7 +20,7 @@ public:
 
     static void Init(const std::wstring& logFilePath) {
         std::lock_guard<std::mutex> lock(s_mutex);
-        s_file.open(logFilePath, std::ios::app);
+        s_file.open(std::filesystem::path(logFilePath), std::ios::app);
     }
 
     // зааписать сообщение
