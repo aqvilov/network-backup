@@ -55,6 +55,22 @@ set_target_properties(NetBackup PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/bin/Release
 )
 
+add_executable(MainWindow_test
+    tests/MainWindow_test.cpp
+)
+
+target_include_directories(MainWindow_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(MainWindow_test
+    comctl32
+    shell32
+    ole32
+)
+
+enable_testing()
+add_test(NAME MainWindow_test COMMAND MainWindow_test)
 
 # if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/resources/app.ico)
 #     set_target_properties(NetBackup PROPERTIES

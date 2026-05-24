@@ -19,7 +19,7 @@ public:
 
     static void Init(const std::wstring& logFilePath) {
         std::lock_guard<std::mutex> lock(s_mutex);
-        s_file.open(logFilePath, std::ios::app);
+        s_file.open(logFilePath.c_str(), std::ios::app);
     }
 
     // зааписать сообщение

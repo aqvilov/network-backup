@@ -183,7 +183,7 @@ namespace FileUtils {
     }
 
     inline uint32_t ComputeCRC32(const std::wstring& filePath) {
-        std::ifstream f(filePath, std::ios::binary);
+        std::ifstream f(std::string(filePath.begin(), filePath.end()), std::ios::binary);
         if (!f.is_open()) return 0;
         uint32_t crc = 0xFFFFFFFF;
         char buf[4096];

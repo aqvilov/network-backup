@@ -15,7 +15,7 @@ public:
     // Загрузить настройки из файла
     static bool Load(const std::wstring& path) {
         s_path = path;
-        std::wifstream f(path);
+        std::wifstream f(path.c_str());
         if (!f.is_open()) return false;
 
         std::wstring line;
@@ -33,7 +33,7 @@ public:
 
     // Сохранить настройки в файл
     static bool Save() {
-        std::wofstream f(s_path);
+        std::wofstream f(s_path.c_str());
         if (!f.is_open()) return false;
         f << L"# NetBackup config\n";
         for (auto& [k, v] : s_data)
