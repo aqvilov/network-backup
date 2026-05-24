@@ -770,8 +770,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     if (!refresh.empty()) 
     {
         // Те же Client ID/Secret, что и выше
-        GoogleAuth::Initialize(L"678345911314-4o81mhbqq3l3u6cqt2q00cqdtqr21h29.apps.googleusercontent.com", L"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");
-        GoogleTokens tokens;
         if (GoogleAuth::RefreshAccessToken(refresh, tokens)) 
         {
             GoogleDriveUploader::SetAccessToken(tokens.access_token);
