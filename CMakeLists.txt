@@ -14,19 +14,7 @@ endif()
 # FetchContent для библиотек
 include(FetchContent)
 
-# nlohmann/json
-FetchContent_Declare(json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG v3.11.2
-)
-FetchContent_MakeAvailable(json)
-
-# cpp-httplib
-FetchContent_Declare(httplib
-    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
-    GIT_TAG v0.15.3
-)
-FetchContent_MakeAvailable(httplib)
+# Use bundled headers in include/ (nlohmann/json.hpp and httplib.h)
 
 if(WIN32)
 
@@ -44,7 +32,7 @@ add_executable(NetBackup WIN32
     src/MainWindow.cpp
     
     src/GoogleAuth.cpp
-    src/GoogleDriverUpLoader.cpp
+    src/GoogleDriveUploader.cpp
 
     include/Logger.h
     include/Config.h
@@ -56,8 +44,6 @@ add_executable(NetBackup WIN32
 
 target_include_directories(NetBackup PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${nlohmann_json_SOURCE_DIR}/include   # для <nlohmann/json.hpp>
-    ${httplib_SOURCE_DIR}                 # для <httplib.h>
 )
 
 

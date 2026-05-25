@@ -769,6 +769,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     std::wstring refresh = GoogleAuth::GetStoredRefreshToken();
     if (!refresh.empty()) 
     {
+        GoogleTokens tokens;
         // Те же Client ID/Secret, что и выше
         if (GoogleAuth::RefreshAccessToken(refresh, tokens)) 
         {
