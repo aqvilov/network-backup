@@ -15,6 +15,11 @@
 #include "FileUtils.h"
 #include "Logger.h"
 
+// Внешняя функция для добавления ошибок (определена в MainWindow.cpp)
+// ПРОТОТИП ДОЛЖЕН БЫТЬ С 4 АРГУМЕНТАМИ
+extern void AddErrorRecord(const std::wstring& filePath, const std::wstring& errorMessage, 
+                           bool isDriveError, const std::wstring& watchRoot);
+
 // коллбэк результата: путь к файлу, успех/неудача, сколько байт скопировано
 using ResultCallback = std::function<void(const std::wstring& path,
                                           bool success,
@@ -50,7 +55,7 @@ public:
         m_watchRoots = watchRoots;
     }
 
-    // ДОБАВИТЬ В ОЧЕЕРЕДЬ
+    // ДОБАВИТЬ В ОЧЕРЕДЬ
     void Enqueue(const std::wstring& filePath) {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_pending.count(filePath)) return; // КОНТРИМ УЖЕ ДОБАВЛЕННЫЕ ФАЙЛЫ
@@ -140,10 +145,12 @@ private:
                 } else {
                     m_stats.errors++;
                     Logger::Error(L"Ошибка копирования: " + filePath + L" — " + result.error);
+                    // Добавляем ошибку в отчёт - 4 аргумента
+                    AddErrorRecord(filePath, result.error, false, watchRoot);
                 }
             }
             
-                        // Загрузка в Google Drive (если включено)
+            // Загрузка в Google Drive (если включено)
             bool uploadEnabled;
             std::wstring parentFolder;
             {
@@ -151,6 +158,7 @@ private:
                 uploadEnabled = m_uploadToDrive;
                 parentFolder = m_driveParentFolderId;
             }
+            
             if (uploadEnabled && result.success) 
             {
                 GoogleDriveUploader::UploadFile(filePath, parentFolder,
@@ -163,6 +171,8 @@ private:
                         else 
                         {
                             Logger::Error(L"[Google Drive] Ошибка " + path + L": " + res.errorMsg);
+                            // Добавляем ошибку Google Drive в отчёт - 4 аргумента
+                            AddErrorRecord(path, res.errorMsg, true, L"");
                         }
                     });
             }

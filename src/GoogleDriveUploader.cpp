@@ -15,6 +15,9 @@
 
 using json = nlohmann::json;
 
+extern void AddErrorRecord(const std::wstring& filePath, const std::wstring& errorMessage, 
+                           bool isDriveError = false, const std::wstring& watchRoot = L"");
+
 // Определение статических членов класса
 std::wstring GoogleDriveUploader::s_accessToken;
 std::mutex GoogleDriveUploader::s_mutex;
@@ -136,6 +139,7 @@ void GoogleDriveUploader::UploadFileSync(const std::wstring& localFilePath,
         UploadResult res;
         res.success = false;
         res.errorMsg = L"Нет действительного access_token. Выполните вход через Google.";
+        AddErrorRecord(localFilePath, res.errorMsg, true);
         callback(localFilePath, res);
         return;
     }
@@ -145,6 +149,7 @@ void GoogleDriveUploader::UploadFileSync(const std::wstring& localFilePath,
         UploadResult res;
         res.success = false;
         res.errorMsg = L"Файл не найден: " + localFilePath;
+        AddErrorRecord(localFilePath, res.errorMsg, true);
         callback(localFilePath, res);
         return;
     }
@@ -156,6 +161,7 @@ void GoogleDriveUploader::UploadFileSync(const std::wstring& localFilePath,
         UploadResult res;
         res.success = false;
         res.errorMsg = FileUtils::Utf8ToWide(readError);
+        AddErrorRecord(localFilePath, res.errorMsg, true);
         callback(localFilePath, res);
         return;
     }
@@ -210,6 +216,7 @@ void GoogleDriveUploader::UploadFileSync(const std::wstring& localFilePath,
     if (!response) {
         result.errorMsg = L"Сетевая ошибка: " + FileUtils::Utf8ToWide(httplib::to_string(response.error()));
         Logger::Error(L"[GoogleDrive] " + result.errorMsg);
+        AddErrorRecord(localFilePath, result.errorMsg, true);
         callback(localFilePath, result);
         return;
     }
@@ -218,6 +225,7 @@ void GoogleDriveUploader::UploadFileSync(const std::wstring& localFilePath,
         std::wstring err = L"HTTP " + std::to_wstring(response->status) + L": " + FileUtils::Utf8ToWide(response->body);
         result.errorMsg = err;
         Logger::Error(L"[GoogleDrive] Ошибка загрузки " + localFilePath + L" — " + err);
+        AddErrorRecord(localFilePath, result.errorMsg, true);
         callback(localFilePath, result);
         return;
     }
@@ -231,10 +239,12 @@ void GoogleDriveUploader::UploadFileSync(const std::wstring& localFilePath,
         } else {
             result.errorMsg = L"Неожиданный ответ: " + FileUtils::Utf8ToWide(response->body);
             Logger::Error(L"[GoogleDrive] " + result.errorMsg);
+            AddErrorRecord(localFilePath, result.errorMsg, true);
         }
     } catch (const std::exception& e) {
         result.errorMsg = L"Ошибка парсинга JSON: " + FileUtils::Utf8ToWide(e.what());
         Logger::Error(L"[GoogleDrive] " + result.errorMsg);
+        AddErrorRecord(localFilePath, result.errorMsg, true);
     }
 
     callback(localFilePath, result);

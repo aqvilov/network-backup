@@ -8,12 +8,16 @@
 #include <windows.h>
 #include <shlobj.h>
 #include <commctrl.h>
+#include <commdlg.h>
 #include <shellapi.h>
 #include <string>
 #include <sstream>
 #include <atomic>
 #include <stack>
 #include <memory>
+#include <fstream>
+#include <mutex>
+#include <vector>
 
 #include "../include/Logger.h"
 #include "../include/Config.h"
@@ -31,30 +35,32 @@ namespace fs = std::filesystem;
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "comdlg32.lib")
 
-#define ID_BTN_WATCH_ADD  101
-#define ID_BTN_WATCH_REMOVE 102
-#define ID_BTN_DEST       103
-#define ID_BTN_START      104
-#define ID_BTN_STOP       105
-#define ID_BTN_OPEN_DEST  106
-#define ID_LIST_WATCH     107
-#define ID_LIST           108
+#define ID_BTN_WATCH_ADD      101
+#define ID_BTN_WATCH_REMOVE   102
+#define ID_BTN_DEST           103
+#define ID_BTN_START          104
+#define ID_BTN_STOP           105
+#define ID_BTN_OPEN_DEST      106
+#define ID_LIST_WATCH         107
+#define ID_LIST               108
 #define ID_BTN_GOOGLE_LOGIN   110
 #define ID_BTN_DRIVE_TOGGLE   111
-#define ID_TIMER_UI       200
+#define ID_BTN_ERROR_REPORT   112
+#define ID_TIMER_UI           200
 
 // Константы для трея
-#define WM_TRAYICON       (WM_USER + 100)
-#define ID_TRAY_EXIT      1001
-#define ID_TRAY_SHOW      1002
-#define ID_TRAY_START     1003
-#define ID_TRAY_STOP      1004
+#define WM_TRAYICON           (WM_USER + 100)
+#define ID_TRAY_EXIT          1001
+#define ID_TRAY_SHOW          1002
+#define ID_TRAY_START         1003
+#define ID_TRAY_STOP          1004
 
-#define WM_LOG_UPDATE     (WM_USER + 1) 
-#define WM_STATS_UPDATE   (WM_USER + 2)
-#define WM_FULLSYNC_UPDATE (WM_USER + 3) 
-#define WM_START_WATCHER   (WM_USER + 4)
+#define WM_LOG_UPDATE         (WM_USER + 1) 
+#define WM_STATS_UPDATE       (WM_USER + 2)
+#define WM_FULLSYNC_UPDATE    (WM_USER + 3) 
+#define WM_START_WATCHER      (WM_USER + 4)
 
 // Имя мьютекса для предотвращения множественных экземпляров
 #define APP_MUTEX_NAME L"Global\\NetBackup_Mutex_{F5E8B2C1-9A4D-4E2B-8F3C-1A7B9C5D2E8F}"
@@ -76,14 +82,325 @@ static HWND g_hBtnStop = nullptr;
 static HWND g_hBtnOpenDest = nullptr;
 static HWND g_hBtnWatchAdd = nullptr;
 static HWND g_hBtnWatchRemove = nullptr;
+static HWND g_hBtnErrorReport = nullptr;
 static HFONT g_hFont = nullptr;
 
 static bool g_uploadToDrive = false;
 static HWND g_hBtnDriveToggle = nullptr;
 
-// Для трея
 static NOTIFYICONDATAW g_nid = {};
 static bool g_bTrayCreated = false;
+
+//Ошибки
+struct ErrorRecord {
+    std::wstring timestamp;
+    std::wstring filePath;
+    std::wstring watchRoot; 
+    std::wstring errorMessage;
+    bool isDriveError;
+    bool isBackupError;          
+};
+
+static std::vector<ErrorRecord> g_errorList;
+static std::mutex g_errorMutex;
+
+void AddErrorRecord(const std::wstring& filePath, const std::wstring& errorMessage, bool isDriveError = false, const std::wstring& watchRoot = L"") {
+    std::lock_guard<std::mutex> lock(g_errorMutex);
+    
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    wchar_t timeBuf[32];
+    swprintf_s(timeBuf, L"%02d:%02d:%02d", st.wHour, st.wMinute, st.wSecond);
+    
+    g_errorList.push_back({timeBuf, filePath, watchRoot, errorMessage, isDriveError, !isDriveError});
+    
+    // Ограничиваем размер списка (храним последние 1000 ошибок)
+    if (g_errorList.size() > 1000) {
+        g_errorList.erase(g_errorList.begin());
+    }
+}
+
+void ExportErrorReportToFile(HWND hWnd, bool isCSV = false) {
+    wchar_t filename[MAX_PATH] = {};
+    
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hWnd;
+    
+    if (isCSV) {
+        ofn.lpstrFilter = L"CSV Files (*.csv)\0*.csv\0";
+        ofn.lpstrDefExt = L"csv";
+    } else {
+        ofn.lpstrFilter = L"Text Files (*.txt)\0*.txt\0";
+        ofn.lpstrDefExt = L"txt";
+    }
+    
+    ofn.lpstrFile = filename;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_OVERWRITEPROMPT;
+    
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    if (isCSV) {
+        swprintf_s(filename, MAX_PATH, L"NetBackup_Error_Report_%04d%02d%02d.csv", st.wYear, st.wMonth, st.wDay);
+    } else {
+        swprintf_s(filename, MAX_PATH, L"NetBackup_Error_Report_%04d%02d%02d.txt", st.wYear, st.wMonth, st.wDay);
+    }
+    
+    if (GetSaveFileNameW(&ofn)) {
+        std::wofstream file(filename);
+        if (file.is_open()) {
+            if (isCSV) {
+                file << L"Время,Тип,Файл,Ошибка\n";
+            } else {
+                file << L"========================================\n";
+                file << L"NetBackup - Отчёт об ошибках\n";
+                file << L"Дата создания: ";
+                SYSTEMTIME st2;
+                GetLocalTime(&st2);
+                file << st2.wDay << L"." << st2.wMonth << L"." << st2.wYear 
+                     << L" " << st2.wHour << L":" << st2.wMinute << L":" << st2.wSecond << L"\n";
+                file << L"========================================\n\n";
+            }
+            
+            std::lock_guard<std::mutex> lock(g_errorMutex);
+            
+            if (g_errorList.empty()) {
+                file << L"Ошибок не зафиксировано.\n";
+            } else {
+                if (!isCSV) {
+                    file << L"Всего ошибок: " << g_errorList.size() << L"\n\n";
+                }
+                
+                for (const auto& err : g_errorList) {
+                    if (isCSV) {
+                        file << L"\"" << err.timestamp << L"\",";
+                        file << (err.isDriveError ? L"Google Drive" : L"Локальный бэкап") << L",";
+                        file << L"\"" << err.filePath << L"\",";
+                        file << L"\"" << err.errorMessage << L"\"\n";
+                    } else {
+                        file << L"[" << err.timestamp << L"] ";
+                        file << (err.isDriveError ? L"[GOOGLE DRIVE] " : L"[BACKUP] ");
+                        file << err.filePath << L"\n";
+                        file << L"  Ошибка: " << err.errorMessage << L"\n\n";
+                    }
+                }
+            }
+            
+            file.close();
+            MessageBoxW(hWnd, L"Отчёт успешно сохранён!", L"Успех", MB_OK);
+        } else {
+            MessageBoxW(hWnd, L"Не удалось сохранить файл.", L"Ошибка", MB_ICONERROR);
+        }
+    }
+}
+
+static LRESULT CALLBACK ErrorReportWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    static HWND hListView;
+    static HWND hBtnExportTxt;
+    static HWND hBtnExportCsv;
+    static HWND hBtnRetry;
+    static HWND hBtnClear;
+    static HWND hBtnClose;
+    static std::vector<ErrorRecord> currentErrors;
+    
+    switch (msg) {
+    case WM_CREATE: {
+        // Создаём ListView для отображения ошибок
+        hListView = CreateWindowW(WC_LISTVIEWW, L"",
+            WS_CHILD | WS_VISIBLE | WS_BORDER |
+            LVS_REPORT | LVS_SINGLESEL,
+            10, 10, 530, 350, hWnd, nullptr, GetModuleHandle(nullptr), nullptr);
+        
+        // Добавляем колонки
+        LVCOLUMNW col = {};
+        col.mask = LVCF_TEXT | LVCF_WIDTH;
+        
+        col.cx = 70;
+        col.pszText = (LPWSTR)L"Время";
+        ListView_InsertColumn(hListView, 0, &col);
+        
+        col.cx = 90;
+        col.pszText = (LPWSTR)L"Тип";
+        ListView_InsertColumn(hListView, 1, &col);
+        
+        col.cx = 380;
+        col.pszText = (LPWSTR)L"Файл / Ошибка";
+        ListView_InsertColumn(hListView, 2, &col);
+        
+        SendMessageW(hListView, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+        
+        // Кнопки
+        hBtnExportTxt = CreateWindowW(L"BUTTON", L"Экспорт TXT",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            10, 370, 100, 30, hWnd, (HMENU)1, GetModuleHandle(nullptr), nullptr);
+        SendMessageW(hBtnExportTxt, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+        
+        hBtnExportCsv = CreateWindowW(L"BUTTON", L"Экспорт CSV",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            120, 370, 100, 30, hWnd, (HMENU)2, GetModuleHandle(nullptr), nullptr);
+        SendMessageW(hBtnExportCsv, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+        
+        hBtnRetry = CreateWindowW(L"BUTTON", L"⟳ Повторить",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            230, 370, 100, 30, hWnd, (HMENU)5, GetModuleHandle(nullptr), nullptr);
+        SendMessageW(hBtnRetry, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+        
+        hBtnClear = CreateWindowW(L"BUTTON", L"Очистить",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            340, 370, 100, 30, hWnd, (HMENU)3, GetModuleHandle(nullptr), nullptr);
+        SendMessageW(hBtnClear, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+        
+        hBtnClose = CreateWindowW(L"BUTTON", L"Закрыть",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            450, 370, 90, 30, hWnd, (HMENU)4, GetModuleHandle(nullptr), nullptr);
+        SendMessageW(hBtnClose, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+        
+        // Заполняем список
+        std::lock_guard<std::mutex> lock(g_errorMutex);
+        currentErrors = g_errorList;
+        
+        for (const auto& err : currentErrors) {
+            int row = ListView_GetItemCount(hListView);
+            LVITEMW item = {};
+            item.mask = LVIF_TEXT;
+            item.iItem = row;
+            item.iSubItem = 0;
+            item.pszText = (LPWSTR)err.timestamp.c_str();
+            ListView_InsertItem(hListView, &item);
+            
+            std::wstring type;
+            if (err.isDriveError) {
+                type = L"Google Drive";
+            } else if (err.isBackupError) {
+                type = L"Локальный";
+            } else {
+                type = L"Ошибка";
+            }
+            ListView_SetItemText(hListView, row, 1, (LPWSTR)type.c_str());
+            
+            std::wstring details = err.filePath + L": " + err.errorMessage;
+            if (details.length() > 380) {
+                details = details.substr(0, 377) + L"...";
+            }
+            ListView_SetItemText(hListView, row, 2, (LPWSTR)details.c_str());
+        }
+        break;
+    }
+    
+    case WM_COMMAND:
+        switch (LOWORD(wParam)) {
+        case 1: // Экспорт в TXT
+            ExportErrorReportToFile(hWnd, false);
+            break;
+        case 2: // Экспорт в CSV
+            ExportErrorReportToFile(hWnd, true);
+            break;
+        case 3: // Очистить
+            if (MessageBoxW(hWnd, L"Очистить список ошибок?", L"Подтверждение", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                std::lock_guard<std::mutex> lock(g_errorMutex);
+                g_errorList.clear();
+                currentErrors.clear();
+                ListView_DeleteAllItems(hListView);
+            }
+            break;
+        case 4: // Закрыть
+            DestroyWindow(hWnd);
+            break;
+        case 5: // Повторить
+        {
+            int selected = ListView_GetNextItem(hListView, -1, LVNI_SELECTED);
+            if (selected >= 0 && selected < (int)currentErrors.size()) {
+                const auto& err = currentErrors[selected];
+                
+                if (err.isDriveError) {
+                    // Повторная загрузка в Google Drive
+                    GoogleDriveUploader::UploadFile(err.filePath, L"",
+                        [](const std::wstring& path, const UploadResult& res) {
+                            if (res.success) {
+                                Logger::Info(L"[Google Drive] Повторная загрузка успешна: " + path);
+                                MessageBoxW(g_hWnd, (L"Файл успешно загружен:\n" + path).c_str(), 
+                                           L"Успех", MB_OK | MB_ICONINFORMATION);
+                            } else {
+                                Logger::Error(L"[Google Drive] Ошибка повторной загрузки " + path + L": " + res.errorMsg);
+                                MessageBoxW(g_hWnd, (L"Ошибка повторной загрузки:\n" + path + L"\n\n" + res.errorMsg).c_str(),
+                                           L"Ошибка", MB_OK | MB_ICONERROR);
+                            }
+                        });
+                } else if (err.isBackupError && !err.watchRoot.empty()) {
+                    // Повторное копирование в локальный бэкап
+                    std::wstring dest = Config::Get(L"destPath");
+                    if (!dest.empty()) {
+                        g_queue.Enqueue(err.filePath);
+                        Logger::Info(L"Файл добавлен в очередь для повторного копирования: " + err.filePath);
+                        MessageBoxW(hWnd, (L"Файл добавлен в очередь для повторного копирования:\n" + err.filePath).c_str(),
+                                   L"Информация", MB_OK | MB_ICONINFORMATION);
+                    } else {
+                        MessageBoxW(hWnd, L"Папка бэкапа не выбрана!", L"Ошибка", MB_OK | MB_ICONERROR);
+                    }
+                } else {
+                    MessageBoxW(hWnd, L"Не удалось определить тип ошибки для повторения.", 
+                               L"Ошибка", MB_OK | MB_ICONWARNING);
+                }
+            } else {
+                MessageBoxW(hWnd, L"Выберите файл из списка для повторной попытки.", 
+                           L"Предупреждение", MB_OK | MB_ICONWARNING);
+            }
+            break;
+        }
+        }
+        break;
+        
+    case WM_SIZE: {
+        RECT rc;
+        GetClientRect(hWnd, &rc);
+        if (hListView) {
+            int width = rc.right - 20;
+            int height = rc.bottom - 90;
+            SetWindowPos(hListView, nullptr, 10, 10, width, height, SWP_NOZORDER);
+            
+            // Обновляем ширину колонок
+            ListView_SetColumnWidth(hListView, 0, 70);
+            ListView_SetColumnWidth(hListView, 1, 90);
+            ListView_SetColumnWidth(hListView, 2, width - 180);
+            
+            int bottomY = rc.bottom - 45;
+            SetWindowPos(hBtnExportTxt, nullptr, 10, bottomY, 100, 30, SWP_NOZORDER);
+            SetWindowPos(hBtnExportCsv, nullptr, 120, bottomY, 100, 30, SWP_NOZORDER);
+            SetWindowPos(hBtnRetry, nullptr, 230, bottomY, 100, 30, SWP_NOZORDER);
+            SetWindowPos(hBtnClear, nullptr, 340, bottomY, 100, 30, SWP_NOZORDER);
+            SetWindowPos(hBtnClose, nullptr, rc.right - 100, bottomY, 90, 30, SWP_NOZORDER);
+        }
+        break;
+    }
+    
+    case WM_DESTROY:
+        break;
+        
+    default:
+        return DefWindowProcW(hWnd, msg, wParam, lParam);
+    }
+    return 0;
+}
+
+static void ShowErrorReportWindow(HWND hWndParent) {
+    WNDCLASSW wc = {};
+    wc.lpfnWndProc = ErrorReportWndProc;
+    wc.hInstance = GetModuleHandle(nullptr);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = L"ErrorReportWindow";
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    RegisterClassW(&wc);
+    
+    HWND hWnd = CreateWindowW(L"ErrorReportWindow", L"Отчёт об ошибках",
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        CW_USEDEFAULT, CW_USEDEFAULT, 580, 450,
+        hWndParent, nullptr, GetModuleHandle(nullptr), nullptr);
+    
+    ShowWindow(hWnd, SW_SHOW);
+}
+
+// ========== Основные функции приложения ==========
 
 // выбор папки
 static std::wstring PickFolder(HWND owner, const wchar_t* title) {
@@ -98,20 +415,6 @@ static std::wstring PickFolder(HWND owner, const wchar_t* title) {
         CoTaskMemFree(pidl);
     }
     return buf;
-}
-
-static void ListAddItem(const std::wstring& text) {
-    if (!g_hList) return;
-    int count = ListView_GetItemCount(g_hList);
-    LVITEMW item = {};
-    item.mask = LVIF_TEXT;
-    item.iItem = count;
-    item.pszText = (LPWSTR)text.c_str();
-    ListView_InsertItem(g_hList, &item);
-    ListView_EnsureVisible(g_hList, count, FALSE);
-
-    if (count > 500)
-        ListView_DeleteItem(g_hList, 0);
 }
 
 static void RefreshStats() {
@@ -134,11 +437,7 @@ static void CreateTrayIcon(HWND hWnd) {
     g_nid.uID = 1;
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
-    
-    // Загружаем иконку из приложения
     g_nid.hIcon = LoadIcon(GetModuleHandle(nullptr), IDI_APPLICATION);
-    
-    // Подсказка при наведении
     wcscpy_s(g_nid.szTip, L"NetBackup — Резервное копирование");
     
     Shell_NotifyIconW(NIM_ADD, &g_nid);
@@ -160,7 +459,6 @@ static void ShowTrayContextMenu(HWND hWnd) {
     
     HMENU hMenu = CreatePopupMenu();
     
-    // Добавляем пункты меню
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_SHOW, L"Показать окно");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     
@@ -173,7 +471,6 @@ static void ShowTrayContextMenu(HWND hWnd) {
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, L"Выход");
     
-    // Показываем меню
     SetForegroundWindow(hWnd);
     TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, nullptr);
     PostMessageW(hWnd, WM_NULL, 0, 0);
@@ -231,7 +528,6 @@ static void CreateControls(HWND hWnd) {
     col.pszText = (LPWSTR)L"Путь";
     ListView_InsertColumn(g_hListWatch, 0, &col);
     
-    // Запрещаем изменение размера столбцов
     HWND hHeaderWatch = ListView_GetHeader(g_hListWatch);
     if (hHeaderWatch) {
         LONG styleWatch = GetWindowLongW(hHeaderWatch, GWL_STYLE);
@@ -258,38 +554,40 @@ static void CreateControls(HWND hWnd) {
     MakeButton(L"Выбрать...", 472, 121, 100, 26, (HMENU)ID_BTN_DEST);
 
     // кнопки управления
-    g_hBtnStart = MakeButton(L"▶  Старт", 10, 158, 120, 30, (HMENU)ID_BTN_START);
-    g_hBtnStop = MakeButton(L"■  Стоп", 140, 158, 120, 30, (HMENU)ID_BTN_STOP);
-    g_hBtnOpenDest = MakeButton(L"📁 Открыть бэкап", 280, 158, 150, 30, (HMENU)ID_BTN_OPEN_DEST);
+    g_hBtnStart = MakeButton(L"▶ Старт", 10, 158, 90, 30, (HMENU)ID_BTN_START);
+    g_hBtnStop = MakeButton(L"■ Стоп", 105, 158, 90, 30, (HMENU)ID_BTN_STOP);
+    g_hBtnOpenDest = MakeButton(L"📁 Открыть бэкап", 200, 158, 110, 30, (HMENU)ID_BTN_OPEN_DEST);
+    g_hBtnErrorReport = MakeButton(L"📋 Ошибки", 315, 158, 80, 30, (HMENU)ID_BTN_ERROR_REPORT);
+    
     EnableWindow(g_hBtnStop, FALSE);
     EnableWindow(g_hBtnOpenDest, FALSE);
 
     // Кнопка входа в Google
     HWND hBtnGoogle = CreateWindowW(L"BUTTON", L"🔑 Гугл",
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        440, 158, 100, 30, hWnd, (HMENU)ID_BTN_GOOGLE_LOGIN, nullptr, nullptr);
+        440, 158, 70, 30, hWnd, (HMENU)ID_BTN_GOOGLE_LOGIN, nullptr, nullptr);
     SendMessageW(hBtnGoogle, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 
     // Кнопка включения Drive
-    g_hBtnDriveToggle = CreateWindowW(L"BUTTON", L"☁️ Облако выключенно",
+    g_hBtnDriveToggle = CreateWindowW(L"BUTTON", L"☁️ Облако",
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        550, 158, 70, 30, hWnd, (HMENU)ID_BTN_DRIVE_TOGGLE, nullptr, nullptr);
+        515, 158, 70, 30, hWnd, (HMENU)ID_BTN_DRIVE_TOGGLE, nullptr, nullptr);
     SendMessageW(g_hBtnDriveToggle, WM_SETFONT, (WPARAM)g_hFont, TRUE);
     EnableWindow(g_hBtnDriveToggle, FALSE);
 
     //статус
-    g_hLblStatus = MakeLabel(L"Ожидание...", 10, 198, 565, 20);
-    g_hLblStats = MakeLabel(L"", 10, 218, 565, 18);
+    g_hLblStatus = MakeLabel(L"Ожидание...", 10, 198, 575, 20);
+    g_hLblStats = MakeLabel(L"", 10, 218, 575, 18);
 
     // список событий
     MakeLabel(L"Журнал событий:", 10, 243, 200, 18);
     g_hList = CreateWindowW(WC_LISTVIEWW, L"",
         WS_CHILD | WS_VISIBLE | WS_BORDER |
         LVS_REPORT | LVS_NOSORTHEADER | LVS_SHOWSELALWAYS,
-        10, 263, 565, 182, hWnd, (HMENU)ID_LIST, nullptr, nullptr);
+        10, 263, 575, 182, hWnd, (HMENU)ID_LIST, nullptr, nullptr);
     SendMessageW(g_hList, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 
-    // крлонки ListView
+    // колонки ListView
     auto AddCol = [](HWND hList, const wchar_t* text, int width, int idx) {
         LVCOLUMNW c = {};
         c.mask = LVCF_TEXT | LVCF_WIDTH;
@@ -299,9 +597,8 @@ static void CreateControls(HWND hWnd) {
         };
     AddCol(g_hList, L"Время", 70, 0);
     AddCol(g_hList, L"Статус", 60, 1);
-    AddCol(g_hList, L"Файл", 432, 2);
+    AddCol(g_hList, L"Файл", 442, 2);
 
-    // Запрещаем изменение размера столбцов
     HWND hHeader = ListView_GetHeader(g_hList);
     if (hHeader) {
         LONG style = GetWindowLongW(hHeader, GWL_STYLE);
@@ -387,8 +684,7 @@ static void FullSync(const std::vector<std::wstring>& watchRoots, const std::wst
         }
 
         wchar_t finalMsg[256];
-        swprintf_s(finalMsg, L"Сканирование завершено. Файлов добавлено в очередь: %llu",
-                   fileCount);
+        swprintf_s(finalMsg, L"Сканирование завершено. Файлов добавлено в очередь: %llu", fileCount);
         Logger::Info(finalMsg);
         g_isFullSyncRunning.store(false);
         PostMessageW(hWnd, WM_FULLSYNC_UPDATE, (WPARAM)(new std::wstring(finalMsg)), 0);
@@ -474,11 +770,9 @@ static void StartBackup(HWND hWnd) {
         return;
     }
 
-    // Устанавливаем корневые папки для очереди
     g_queue.SetWatchRoots(watchPaths);
-
     g_queue.EnableGoogleDriveUpload(g_uploadToDrive);
-    g_queue.SetGoogleDriveParentFolder(L""); // корень
+    g_queue.SetGoogleDriveParentFolder(L"");
 
     EnableWindow(g_hBtnStart, FALSE);
     EnableWindow(g_hBtnStop, FALSE);
@@ -511,14 +805,12 @@ static void ActuallyStartWatcher()
     std::wstring dest = Config::Get(L"destPath");
     Logger::Info(L"[DEBUG] Попытка запустить watchers для " + std::to_wstring(watchPaths.size()) + L" папок");
 
-    // Очищаем старые watcher'ы
     g_watchers.clear();
 
     bool allStarted = true;
     for (size_t i = 0; i < watchPaths.size(); ++i) {
         const auto& watch = watchPaths[i];
         
-        // Создаем новый Watcher через unique_ptr
         auto watcher = std::make_unique<Watcher>();
         bool started = watcher->Start(watch, true,
             [](FileAction action, const std::wstring& path) 
@@ -538,14 +830,12 @@ static void ActuallyStartWatcher()
             Logger::Error(L"Не удалось запустить слежку для: " + watch);
             allStarted = false;
         } else {
-            // Добавляем watcher в вектор только если успешно запущен
             g_watchers.push_back(std::move(watcher));
         }
     }
 
     if (!allStarted) 
     {
-        // Останавливаем все запущенные watcher'ы
         g_watchers.clear();
         g_queue.Stop();
         MessageBoxW(g_hWnd, L"Не удалось открыть одну или несколько папок слежки.", L"Ошибка", MB_ICONERROR);
@@ -557,7 +847,6 @@ static void ActuallyStartWatcher()
     g_isRunning.store(true);
     g_isFullSyncRunning.store(false);
     
-    // Формируем строку статуса
     std::wstring statusText = L"Слежу: ";
     for (size_t i = 0; i < watchPaths.size(); ++i) {
         if (i > 0) statusText += L", ";
@@ -582,9 +871,7 @@ static void StopBackup() {
     if (g_syncThread.joinable())
         g_syncThread.join();
     
-    // Останавливаем все watcher'ы (Stop() вызывается автоматически в деструкторе)
     g_watchers.clear();
-    
     g_queue.Stop();
     g_isRunning.store(false);
     g_isFullSyncRunning.store(false);
@@ -732,6 +1019,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 ShellExecuteW(nullptr, L"open", dest.c_str(), nullptr, nullptr, SW_SHOW);
             break;
         }
+        
+        case ID_BTN_ERROR_REPORT:
+            ShowErrorReportWindow(hWnd);
+            break;
 
         case ID_BTN_GOOGLE_LOGIN: 
         {
@@ -749,7 +1040,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     MessageBoxW(g_hWnd, L"Авторизация успешна!", L"Google", MB_OK);
                     EnableWindow(g_hBtnDriveToggle, TRUE);
                     g_uploadToDrive = true;
-                    SetWindowTextW(g_hBtnDriveToggle, L"☁️ Облако включенно");
+                    SetWindowTextW(g_hBtnDriveToggle, L"☁️ Облако");
                     if (g_isRunning.load())
                         g_queue.EnableGoogleDriveUpload(true);
                 } 
@@ -763,7 +1054,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         
         case ID_BTN_DRIVE_TOGGLE: {
             g_uploadToDrive = !g_uploadToDrive;
-            SetWindowTextW(g_hBtnDriveToggle, g_uploadToDrive ? L"☁️ Облако включенно" : L"☁️ Облако выключенно");
+            SetWindowTextW(g_hBtnDriveToggle, g_uploadToDrive ? L"☁️ Облако" : L"☁️ Облако");
             if (g_isRunning.load()) {
                 g_queue.EnableGoogleDriveUpload(g_uploadToDrive);
                 g_queue.SetGoogleDriveParentFolder(L"");
@@ -808,9 +1099,14 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_SIZE: {
         RECT rc;
         GetClientRect(hWnd, &rc);
-        if (g_hList)
-            SetWindowPos(g_hList, nullptr, 10, 263,
-                rc.right - 20, rc.bottom - 273, SWP_NOZORDER);
+        if (g_hList) {
+            SetWindowPos(g_hList, nullptr, 10, 263, rc.right - 20, rc.bottom - 273, SWP_NOZORDER);
+        }
+        if (g_hListWatch) {
+            SetWindowPos(g_hListWatch, nullptr, 10, 35, rc.right - 135, 80, SWP_NOZORDER);
+            SetWindowPos(g_hBtnWatchAdd, nullptr, rc.right - 120, 35, 90, 26, SWP_NOZORDER);
+            SetWindowPos(g_hBtnWatchRemove, nullptr, rc.right - 120, 65, 90, 26, SWP_NOZORDER);
+        }
         break;
     }
 
@@ -828,20 +1124,15 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_SYSCOMMAND:
         if (wParam == SC_MINIMIZE) {
-            // Сворачиваем в трей
             ShowWindow(hWnd, SW_HIDE);
             return 0;
         }
-        // Для всех остальных системных команд (перемещение, изменение размера)
-        // ОБЯЗАТЕЛЬНО вызываем DefWindowProc
         return DefWindowProcW(hWnd, msg, wParam, lParam);
 
     case WM_CLOSE:
         if (g_bForceExit) {
-            // Реальный выход через меню трея
             DestroyWindow(hWnd);
         } else {
-            // Обычное закрытие - сворачиваем в трей
             ShowWindow(hWnd, SW_HIDE);
         }
         return 0;
@@ -865,7 +1156,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     // Проверка на уже запущенный экземпляр приложения
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, APP_MUTEX_NAME);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        // Приложение уже запущено, находим его окно и показываем
         HWND hExistingWnd = FindWindowW(L"NetBackupMVP", nullptr);
         if (hExistingWnd) {
             if (IsIconic(hExistingWnd)) {
@@ -882,7 +1172,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES };
     InitCommonControlsEx(&icc);
 
-    // Папка настроек %APPDATA%\NetBackup
     std::wstring appDir = FileUtils::GetAppDataDir();
     CreateDirectoryW(appDir.c_str(), nullptr);
 
@@ -890,7 +1179,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         MessageBoxW(nullptr, L"Не удалось создать папку для настроек", L"Ошибка", MB_ICONERROR);
     }
 
-    // Инициализация логгера и конфига
     Logger::Init(appDir + L"\\backup.log");
     Config::Load(appDir + L"\\config.ini");
 
@@ -907,14 +1195,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     wc.lpszClassName = L"NetBackupMVP";
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    // Устанавливаем иконку для окна
     wc.hIcon = LoadIconW(hInstance, IDI_APPLICATION);
     RegisterClassW(&wc);
 
-    // создаём окно
     HWND hWnd = CreateWindowW(
         L"NetBackupMVP",
-        L"NetBackup — Резервное копирование",
+        L"NetBackup — Локальное хранение",
         WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
         650, 500,
         nullptr, nullptr, hInstance, nullptr
@@ -923,24 +1209,20 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);
 
-    // Восстановление Google авторизации
     std::wstring refresh = GoogleAuth::GetStoredRefreshToken();
     if (!refresh.empty()) 
     {
         GoogleTokens tokens;
-        // Те же Client ID/Secret, что и выше
         if (GoogleAuth::RefreshAccessToken(refresh, tokens)) 
         {
             GoogleDriveUploader::SetAccessToken(tokens.access_token);
-            // Загрузить сохранённое состояние Drive из конфига (опционально)
             g_uploadToDrive = (Config::Get(L"drive_enabled", L"0") == L"1");
             if (g_uploadToDrive)
-                SetWindowTextW(g_hBtnDriveToggle, L"☁️ Облако включенно");
+                SetWindowTextW(g_hBtnDriveToggle, L"☁️ Облако");
             EnableWindow(g_hBtnDriveToggle, TRUE);
         }
     }
 
-    // мейн цикл
     MSG msg = {};
     while (GetMessageW(&msg, nullptr, 0, 0)) {
         TranslateMessage(&msg);
