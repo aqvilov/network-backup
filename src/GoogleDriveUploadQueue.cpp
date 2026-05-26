@@ -1,5 +1,5 @@
 #include "../include/GoogleDriveUploadQueue.h"
-#include "../include/GoogleDriveUploader.h"  // для вызова UploadFileSync
+#include "../include/GoogleDriveUploader.h"
 
 void GoogleDriveUploadQueue::Enqueue(const std::wstring& localPath,
                                      const std::wstring& parentFolderId,
@@ -7,14 +7,14 @@ void GoogleDriveUploadQueue::Enqueue(const std::wstring& localPath,
 {
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        m_queue.emplace(localPath, parentFolderId, callback);
+        m_queue.emplace(localPath, parentFolderId, callback);  // <- ИСПРАВЛЕНО
     }
     m_cv.notify_one();
 }
 
 void GoogleDriveUploadQueue::WorkerLoop() {
     while (m_running) {
-        Task task;
+        Task task{L"", L"", nullptr};
         {
             std::unique_lock<std::mutex> lock(m_mutex);
             m_cv.wait(lock, [this] { return !m_queue.empty() || !m_running; });
@@ -23,7 +23,7 @@ void GoogleDriveUploadQueue::WorkerLoop() {
             task = std::move(m_queue.front());
             m_queue.pop();
         }
-        // Выполняем синхронную загрузку (будет реализована позже)
+        // Выполняем синхронную загрузку
         GoogleDriveUploader::UploadFileSync(task.localPath, task.parentFolderId, task.callback);
     }
 }

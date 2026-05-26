@@ -29,6 +29,7 @@ public:
     static bool RefreshTokenIfNeeded();
     static void InitializeUploadQueue();
     static void ShutdownUploadQueue();
+    friend class GoogleDriveUploadQueue;
     
 private:
     static std::wstring s_accessToken;

@@ -1,9 +1,6 @@
 // тут юзаем WinAPI
 // содержит весь UI
 
-#pragma execution_character_set("utf-8")
-#define UNICODE
-#define _UNICODE
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shlobj.h>
@@ -50,7 +47,6 @@ namespace fs = std::filesystem;
 #define ID_BTN_ERROR_REPORT   112
 #define ID_TIMER_UI           200
 
-// Константы для трея
 #define WM_TRAYICON           (WM_USER + 100)
 #define ID_TRAY_EXIT          1001
 #define ID_TRAY_SHOW          1002
@@ -62,7 +58,6 @@ namespace fs = std::filesystem;
 #define WM_FULLSYNC_UPDATE    (WM_USER + 3) 
 #define WM_START_WATCHER      (WM_USER + 4)
 
-// Имя мьютекса для предотвращения множественных экземпляров
 #define APP_MUTEX_NAME L"Global\\NetBackup_Mutex_{F5E8B2C1-9A4D-4E2B-8F3C-1A7B9C5D2E8F}"
 
 static std::vector<std::unique_ptr<Watcher>> g_watchers;
@@ -114,7 +109,6 @@ void AddErrorRecord(const std::wstring& filePath, const std::wstring& errorMessa
     
     g_errorList.push_back({timeBuf, filePath, watchRoot, errorMessage, isDriveError, !isDriveError});
     
-    // Ограничиваем размер списка (храним последние 1000 ошибок)
     if (g_errorList.size() > 1000) {
         g_errorList.erase(g_errorList.begin());
     }
@@ -206,13 +200,11 @@ static LRESULT CALLBACK ErrorReportWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
     
     switch (msg) {
     case WM_CREATE: {
-        // Создаём ListView для отображения ошибок
         hListView = CreateWindowW(WC_LISTVIEWW, L"",
             WS_CHILD | WS_VISIBLE | WS_BORDER |
             LVS_REPORT | LVS_SINGLESEL,
             10, 10, 530, 350, hWnd, nullptr, GetModuleHandle(nullptr), nullptr);
         
-        // Добавляем колонки
         LVCOLUMNW col = {};
         col.mask = LVCF_TEXT | LVCF_WIDTH;
         
@@ -230,7 +222,6 @@ static LRESULT CALLBACK ErrorReportWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
         
         SendMessageW(hListView, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
         
-        // Кнопки
         hBtnExportTxt = CreateWindowW(L"BUTTON", L"Экспорт TXT",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
             10, 370, 100, 30, hWnd, (HMENU)1, GetModuleHandle(nullptr), nullptr);
@@ -256,7 +247,6 @@ static LRESULT CALLBACK ErrorReportWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
             450, 370, 90, 30, hWnd, (HMENU)4, GetModuleHandle(nullptr), nullptr);
         SendMessageW(hBtnClose, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
         
-        // Заполняем список
         std::lock_guard<std::mutex> lock(g_errorMutex);
         currentErrors = g_errorList;
         
@@ -290,13 +280,13 @@ static LRESULT CALLBACK ErrorReportWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
     
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
-        case 1: // Экспорт в TXT
+        case 1: 
             ExportErrorReportToFile(hWnd, false);
             break;
-        case 2: // Экспорт в CSV
+        case 2: 
             ExportErrorReportToFile(hWnd, true);
             break;
-        case 3: // Очистить
+        case 3: 
             if (MessageBoxW(hWnd, L"Очистить список ошибок?", L"Подтверждение", MB_YESNO | MB_ICONQUESTION) == IDYES) {
                 std::lock_guard<std::mutex> lock(g_errorMutex);
                 g_errorList.clear();
@@ -304,17 +294,16 @@ static LRESULT CALLBACK ErrorReportWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
                 ListView_DeleteAllItems(hListView);
             }
             break;
-        case 4: // Закрыть
+        case 4: 
             DestroyWindow(hWnd);
             break;
-        case 5: // Повторить
+        case 5:
         {
             int selected = ListView_GetNextItem(hListView, -1, LVNI_SELECTED);
             if (selected >= 0 && selected < (int)currentErrors.size()) {
                 const auto& err = currentErrors[selected];
                 
                 if (err.isDriveError) {
-                    // Повторная загрузка в Google Drive
                     GoogleDriveUploader::UploadFile(err.filePath, L"",
                         [](const std::wstring& path, const UploadResult& res) {
                             if (res.success) {
@@ -328,7 +317,6 @@ static LRESULT CALLBACK ErrorReportWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
                             }
                         });
                 } else if (err.isBackupError && !err.watchRoot.empty()) {
-                    // Повторное копирование в локальный бэкап
                     std::wstring dest = Config::Get(L"destPath");
                     if (!dest.empty()) {
                         g_queue.Enqueue(err.filePath);
@@ -359,7 +347,6 @@ static LRESULT CALLBACK ErrorReportWndProc(HWND hWnd, UINT msg, WPARAM wParam, L
             int height = rc.bottom - 90;
             SetWindowPos(hListView, nullptr, 10, 10, width, height, SWP_NOZORDER);
             
-            // Обновляем ширину колонок
             ListView_SetColumnWidth(hListView, 0, 70);
             ListView_SetColumnWidth(hListView, 1, 90);
             ListView_SetColumnWidth(hListView, 2, width - 180);
@@ -400,9 +387,7 @@ static void ShowErrorReportWindow(HWND hWndParent) {
     ShowWindow(hWnd, SW_SHOW);
 }
 
-// ========== Основные функции приложения ==========
 
-// выбор папки
 static std::wstring PickFolder(HWND owner, const wchar_t* title) {
     wchar_t buf[MAX_PATH] = {};
     BROWSEINFOW bi = {};
@@ -427,7 +412,6 @@ static void RefreshStats() {
     SetWindowTextW(g_hLblStats, ss.str().c_str());
 }
 
-// Создание иконки в трее
 static void CreateTrayIcon(HWND hWnd) {
     if (g_bTrayCreated) return;
     
@@ -444,7 +428,6 @@ static void CreateTrayIcon(HWND hWnd) {
     g_bTrayCreated = true;
 }
 
-// Удаление иконки из трея
 static void RemoveTrayIcon() {
     if (g_bTrayCreated) {
         Shell_NotifyIconW(NIM_DELETE, &g_nid);
@@ -452,7 +435,6 @@ static void RemoveTrayIcon() {
     }
 }
 
-// Показать контекстное меню трея
 static void ShowTrayContextMenu(HWND hWnd) {
     POINT pt;
     GetCursorPos(&pt);
@@ -477,7 +459,6 @@ static void ShowTrayContextMenu(HWND hWnd) {
     DestroyMenu(hMenu);
 }
 
-// Обновление подсказки в трее
 static void UpdateTrayTip() {
     if (!g_bTrayCreated) return;
     
@@ -514,7 +495,6 @@ static void CreateControls(HWND hWnd) {
         return hw;
         };
 
-    // папки слежки (список)
     MakeLabel(L"Папки для слежки:", 10, 12, 200, 20);
     g_hListWatch = CreateWindowW(WC_LISTVIEWW, L"",
         WS_CHILD | WS_VISIBLE | WS_BORDER |
@@ -537,7 +517,6 @@ static void CreateControls(HWND hWnd) {
     g_hBtnWatchAdd = MakeButton(L"+ Добавить папку", 480, 35, 90, 26, (HMENU)ID_BTN_WATCH_ADD);
     g_hBtnWatchRemove = MakeButton(L"- Удалить", 480, 65, 90, 26, (HMENU)ID_BTN_WATCH_REMOVE);
 
-    // Загружаем сохраненные папки
     auto watchPaths = Config::GetWatchPaths();
     for (const auto& path : watchPaths) {
         LVITEMW item = {};
@@ -547,13 +526,11 @@ static void CreateControls(HWND hWnd) {
         ListView_InsertItem(g_hListWatch, &item);
     }
 
-    // папка бэкапа
     MakeLabel(L"Бэкап:", 10, 125, 70, 20);
     g_hLblDest = MakeLabel(Config::Get(L"destPath", L"не выбрана").c_str(),
         85, 125, 380, 20, (HMENU)ID_BTN_DEST);
     MakeButton(L"Выбрать...", 472, 121, 100, 26, (HMENU)ID_BTN_DEST);
 
-    // кнопки управления
     g_hBtnStart = MakeButton(L"▶ Старт", 10, 158, 90, 30, (HMENU)ID_BTN_START);
     g_hBtnStop = MakeButton(L"■ Стоп", 105, 158, 90, 30, (HMENU)ID_BTN_STOP);
     g_hBtnOpenDest = MakeButton(L"📁 Открыть бэкап", 200, 158, 110, 30, (HMENU)ID_BTN_OPEN_DEST);
@@ -562,24 +539,20 @@ static void CreateControls(HWND hWnd) {
     EnableWindow(g_hBtnStop, FALSE);
     EnableWindow(g_hBtnOpenDest, FALSE);
 
-    // Кнопка входа в Google
     HWND hBtnGoogle = CreateWindowW(L"BUTTON", L"🔑 Гугл",
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
         440, 158, 70, 30, hWnd, (HMENU)ID_BTN_GOOGLE_LOGIN, nullptr, nullptr);
     SendMessageW(hBtnGoogle, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 
-    // Кнопка включения Drive
     g_hBtnDriveToggle = CreateWindowW(L"BUTTON", L"☁️ Облако",
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
         515, 158, 70, 30, hWnd, (HMENU)ID_BTN_DRIVE_TOGGLE, nullptr, nullptr);
     SendMessageW(g_hBtnDriveToggle, WM_SETFONT, (WPARAM)g_hFont, TRUE);
     EnableWindow(g_hBtnDriveToggle, FALSE);
 
-    //статус
     g_hLblStatus = MakeLabel(L"Ожидание...", 10, 198, 575, 20);
     g_hLblStats = MakeLabel(L"", 10, 218, 575, 18);
 
-    // список событий
     MakeLabel(L"Журнал событий:", 10, 243, 200, 18);
     g_hList = CreateWindowW(WC_LISTVIEWW, L"",
         WS_CHILD | WS_VISIBLE | WS_BORDER |
@@ -587,7 +560,6 @@ static void CreateControls(HWND hWnd) {
         10, 263, 575, 182, hWnd, (HMENU)ID_LIST, nullptr, nullptr);
     SendMessageW(g_hList, WM_SETFONT, (WPARAM)g_hFont, TRUE);
 
-    // колонки ListView
     auto AddCol = [](HWND hList, const wchar_t* text, int width, int idx) {
         LVCOLUMNW c = {};
         c.mask = LVCF_TEXT | LVCF_WIDTH;
@@ -606,7 +578,6 @@ static void CreateControls(HWND hWnd) {
     }
 }
 
-//Функция Полной Синхронизации.
 static void FullSync(const std::vector<std::wstring>& watchRoots, const std::wstring& destDir, HWND hWnd) {
     uint64_t fileCount = 0;
 
@@ -712,7 +683,6 @@ static void StartBackup(HWND hWnd) {
         return;
     }
     
-    // Проверка что папка бэкапа не совпадает с папками слежки
     for (const auto& watch : watchPaths) {
         if (watch == dest) 
         {
@@ -884,7 +854,6 @@ static void StopBackup() {
     Logger::Info(L"Остановлено.");
 }
 
-// Глобальная переменная для отслеживания реального выхода
 static bool g_bForceExit = false;
 
 //КАЛЛ БЕК

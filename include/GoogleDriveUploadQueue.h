@@ -11,6 +11,7 @@
 struct UploadResult;
 using UploadCallback = std::function<void(const std::wstring& localPath, const UploadResult& result)>;
 
+
 class GoogleDriveUploadQueue {
 public:
     GoogleDriveUploadQueue() = default;
@@ -39,6 +40,9 @@ private:
         std::wstring localPath;
         std::wstring parentFolderId;
         UploadCallback callback;
+        
+        Task(const std::wstring& path, const std::wstring& folder, UploadCallback cb)
+            : localPath(path), parentFolderId(folder), callback(cb) {}
     };
 
     void WorkerLoop();
