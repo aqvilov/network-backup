@@ -1,7 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 project(NetBackup VERSION 1.0.0)
 
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -11,29 +10,20 @@ if(DEFINED ENV{VCPKG_ROOT} AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
 endif()
 
-# FetchContent для библиотек
-include(FetchContent)
-
-# Use bundled headers in include/ (nlohmann/json.hpp and httplib.h)
-
 if(WIN32)
-
     add_definitions(-DUNICODE -D_UNICODE)
     set(CMAKE_WIN32_EXECUTABLE ON)
 endif()
-
 
 if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
-
+# ========== СНАЧАЛА ОБЪЯВЛЯЕМ ЦЕЛЬ ==========
 add_executable(NetBackup WIN32
     src/MainWindow.cpp
-    
     src/GoogleAuth.cpp
     src/GoogleDriveUploader.cpp
-
     include/Logger.h
     include/Config.h
     include/FileUtils.h
@@ -41,63 +31,39 @@ add_executable(NetBackup WIN32
     include/BackupQueue.h
 )
 
-
 target_include_directories(NetBackup PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-
-target_link_libraries(NetBackup
-    comctl32   
-    shell32    
-    ole32       # COM (CoInitialize/CoUninitialize)
-    ssl crypto #Для https
+# ========== ПОТОМ ПОДКЛЮЧАЕМ БИБЛИОТЕКИ ==========
+target_link_libraries(NetBackup PRIVATE
+    comctl32
+    shell32
+    ole32
+    ws2_32
+    crypt32
 )
 
-# Если используете MSVC, может понадобиться явно указать библиотеки для OpenSSL
+# Поиск OpenSSL (после объявления цели)
+find_package(OpenSSL CONFIG QUIET)
+if(OpenSSL_FOUND)
+    target_link_libraries(NetBackup PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    message(STATUS "OpenSSL found, HTTPS support enabled")
+else()
+    message(WARNING "OpenSSL not found, HTTPS support disabled")
+endif()
+
+# Настройка для MSVC
 if(MSVC)
-    target_link_libraries(NetBackup
-        libssl.lib
-        libcrypto.lib
+    target_compile_definitions(NetBackup PRIVATE
+        _CRT_SECURE_NO_WARNINGS
     )
-endif()
-
-
-if(MINGW)
-    target_link_libraries(NetBackup
-        comctl32
-        shell32
-        ole32
-    )
-endif()
-
-set_target_properties(NetBackup PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/bin/Debug
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/bin/Release
-)
-
-
-# if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/resources/app.ico)
-#     set_target_properties(NetBackup PROPERTIES
-#         LINK_FLAGS "/ENTRY:mainCRTStartup"
-#     )
-#     target_sources(NetBackup PRIVATE resources/app.rc)
-# endif()
-
-
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    if(MSVC)
-        target_compile_options(NetBackup PRIVATE /O2 /MT)
-    elseif(MINGW)
-        target_compile_options(NetBackup PRIVATE -O3 -s)
-    endif()
-endif()
-
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    if(MSVC)
-        target_compile_options(NetBackup PRIVATE /Od /MTd)
-    elseif(MINGW)
-        target_compile_options(NetBackup PRIVATE -O0 -g)
+    # Если OpenSSL не найден, отключаем его в httplib
+    if(NOT OpenSSL_FOUND)
+        target_compile_definitions(NetBackup PRIVATE
+            CPPHTTPLIB_OPENSSL_SUPPORT=0
+            CPPHTTPLIB_SSL_ENABLED=0
+        )
     endif()
 endif()
 
@@ -107,4 +73,29 @@ if(MINGW)
         -static-libstdc++
         -Wl,--subsystem,windows
     )
+    target_compile_definitions(NetBackup PRIVATE
+        CPPHTTPLIB_OPENSSL_SUPPORT=0
+        CPPHTTPLIB_SSL_ENABLED=0
+    )
+endif()
+
+set_target_properties(NetBackup PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/bin/Debug
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/bin/Release
+)
+
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    if(MSVC)
+        target_compile_options(NetBackup PRIVATE /O2)
+    elseif(MINGW)
+        target_compile_options(NetBackup PRIVATE -O3 -s)
+    endif()
+endif()
+
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    if(MSVC)
+        target_compile_options(NetBackup PRIVATE /Od)
+    elseif(MINGW)
+        target_compile_options(NetBackup PRIVATE -O0 -g)
+    endif()
 endif()

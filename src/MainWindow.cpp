@@ -13,6 +13,7 @@
 #include <sstream>
 #include <atomic>
 #include <stack>
+#include <memory>
 
 #include "../include/Logger.h"
 #include "../include/Config.h"
@@ -43,11 +44,20 @@ namespace fs = std::filesystem;
 #define ID_BTN_DRIVE_TOGGLE   111
 #define ID_TIMER_UI       200
 
-#define WM_LOG_UPDATE  (WM_USER + 1) 
-#define WM_STATS_UPDATE (WM_USER + 2)
-#define WM_FULLSYNC_UPDATE   (WM_USER + 3) 
-#define WM_START_WATCHER     (WM_USER + 4)
+// Константы для трея
+#define WM_TRAYICON       (WM_USER + 100)
+#define ID_TRAY_EXIT      1001
+#define ID_TRAY_SHOW      1002
+#define ID_TRAY_START     1003
+#define ID_TRAY_STOP      1004
 
+#define WM_LOG_UPDATE     (WM_USER + 1) 
+#define WM_STATS_UPDATE   (WM_USER + 2)
+#define WM_FULLSYNC_UPDATE (WM_USER + 3) 
+#define WM_START_WATCHER   (WM_USER + 4)
+
+// Имя мьютекса для предотвращения множественных экземпляров
+#define APP_MUTEX_NAME L"Global\\NetBackup_Mutex_{F5E8B2C1-9A4D-4E2B-8F3C-1A7B9C5D2E8F}"
 
 static std::vector<std::unique_ptr<Watcher>> g_watchers;
 static BackupQueue  g_queue;
@@ -71,6 +81,9 @@ static HFONT g_hFont = nullptr;
 static bool g_uploadToDrive = false;
 static HWND g_hBtnDriveToggle = nullptr;
 
+// Для трея
+static NOTIFYICONDATAW g_nid = {};
+static bool g_bTrayCreated = false;
 
 // выбор папки
 static std::wstring PickFolder(HWND owner, const wchar_t* title) {
@@ -109,6 +122,81 @@ static void RefreshStats() {
         << L"  |  Трафик: " << FileUtils::FormatSize(stats.bytes)
         << L"  |  В очереди: " << stats.queued;
     SetWindowTextW(g_hLblStats, ss.str().c_str());
+}
+
+// Создание иконки в трее
+static void CreateTrayIcon(HWND hWnd) {
+    if (g_bTrayCreated) return;
+    
+    memset(&g_nid, 0, sizeof(g_nid));
+    g_nid.cbSize = sizeof(NOTIFYICONDATAW);
+    g_nid.hWnd = hWnd;
+    g_nid.uID = 1;
+    g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    g_nid.uCallbackMessage = WM_TRAYICON;
+    
+    // Загружаем иконку из приложения
+    g_nid.hIcon = LoadIcon(GetModuleHandle(nullptr), IDI_APPLICATION);
+    
+    // Подсказка при наведении
+    wcscpy_s(g_nid.szTip, L"NetBackup — Резервное копирование");
+    
+    Shell_NotifyIconW(NIM_ADD, &g_nid);
+    g_bTrayCreated = true;
+}
+
+// Удаление иконки из трея
+static void RemoveTrayIcon() {
+    if (g_bTrayCreated) {
+        Shell_NotifyIconW(NIM_DELETE, &g_nid);
+        g_bTrayCreated = false;
+    }
+}
+
+// Показать контекстное меню трея
+static void ShowTrayContextMenu(HWND hWnd) {
+    POINT pt;
+    GetCursorPos(&pt);
+    
+    HMENU hMenu = CreatePopupMenu();
+    
+    // Добавляем пункты меню
+    AppendMenuW(hMenu, MF_STRING, ID_TRAY_SHOW, L"Показать окно");
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    
+    if (g_isRunning.load()) {
+        AppendMenuW(hMenu, MF_STRING, ID_TRAY_STOP, L"Остановить бэкап");
+    } else {
+        AppendMenuW(hMenu, MF_STRING, ID_TRAY_START, L"Запустить бэкап");
+    }
+    
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, L"Выход");
+    
+    // Показываем меню
+    SetForegroundWindow(hWnd);
+    TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, nullptr);
+    PostMessageW(hWnd, WM_NULL, 0, 0);
+    DestroyMenu(hMenu);
+}
+
+// Обновление подсказки в трее
+static void UpdateTrayTip() {
+    if (!g_bTrayCreated) return;
+    
+    std::wstring tip;
+    auto stats = g_queue.GetStats();
+    
+    if (g_isRunning.load()) {
+        tip = L"NetBackup — Работает\n";
+        tip += L"Скопировано: " + std::to_wstring(stats.copied) + L" файлов";
+    } else {
+        tip = L"NetBackup — Остановлен";
+    }
+    
+    wcscpy_s(g_nid.szTip, tip.c_str());
+    g_nid.uFlags = NIF_TIP;
+    Shell_NotifyIconW(NIM_MODIFY, &g_nid);
 }
 
 static void CreateControls(HWND hWnd) {
@@ -176,7 +264,6 @@ static void CreateControls(HWND hWnd) {
     EnableWindow(g_hBtnStop, FALSE);
     EnableWindow(g_hBtnOpenDest, FALSE);
 
-
     // Кнопка входа в Google
     HWND hBtnGoogle = CreateWindowW(L"BUTTON", L"🔑 Гугл",
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
@@ -222,7 +309,7 @@ static void CreateControls(HWND hWnd) {
     }
 }
 
-//Функиця Полной Синхронизации.
+//Функция Полной Синхронизации.
 static void FullSync(const std::vector<std::wstring>& watchRoots, const std::wstring& destDir, HWND hWnd) {
     uint64_t fileCount = 0;
 
@@ -396,6 +483,7 @@ static void StartBackup(HWND hWnd) {
     EnableWindow(g_hBtnStart, FALSE);
     EnableWindow(g_hBtnStop, FALSE);
     SetWindowTextW(g_hLblStatus, L"Выполняется первоначальная синхронизация...");
+    UpdateTrayTip();
 
     g_syncThread = std::thread([hWnd, watchPaths, dest]() {
         FullSync(watchPaths, dest, hWnd);
@@ -479,6 +567,7 @@ static void ActuallyStartWatcher()
     
     EnableWindow(g_hBtnStop, TRUE);
     EnableWindow(g_hBtnOpenDest, TRUE);
+    UpdateTrayTip();
     Logger::Info(L"Запущен. Слежка за " + std::to_wstring(watchPaths.size()) + L" папками → " + dest);
 }
 
@@ -503,9 +592,13 @@ static void StopBackup() {
     SetWindowTextW(g_hLblStatus, L"Остановлено.");
     EnableWindow(g_hBtnStart, TRUE);
     EnableWindow(g_hBtnStop, FALSE);
+    UpdateTrayTip();
     
     Logger::Info(L"Остановлено.");
 }
+
+// Глобальная переменная для отслеживания реального выхода
+static bool g_bForceExit = false;
 
 //КАЛЛ БЕК
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -514,21 +607,51 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_CREATE:
         g_hWnd = hWnd;
         CreateControls(hWnd);
-        // Таймер обновления статистики каждые 500ms
+        CreateTrayIcon(hWnd);
         SetTimer(hWnd, ID_TIMER_UI, 500, nullptr);
+        break;
+        
+    case WM_TRAYICON:
+        if (lParam == WM_RBUTTONUP) {
+            ShowTrayContextMenu(hWnd);
+        }
         break;
 
     case WM_TIMER:
-        if (wParam == ID_TIMER_UI) RefreshStats();
+        if (wParam == ID_TIMER_UI) {
+            RefreshStats();
+            UpdateTrayTip();
+        }
         break;
 
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
+        
+        case ID_TRAY_SHOW:
+            ShowWindow(hWnd, SW_SHOW);
+            SetForegroundWindow(hWnd);
+            break;
+            
+        case ID_TRAY_START:
+            if (!g_isRunning.load() && !g_isFullSyncRunning.load()) {
+                StartBackup(hWnd);
+            }
+            break;
+            
+        case ID_TRAY_STOP:
+            if (g_isRunning.load() || g_isFullSyncRunning.load()) {
+                StopBackup();
+            }
+            break;
+            
+        case ID_TRAY_EXIT:
+            g_bForceExit = true;
+            DestroyWindow(hWnd);
+            break;
 
         case ID_BTN_WATCH_ADD: {
             std::wstring p = PickFolder(hWnd, L"Папка для слежки");
             if (!p.empty()) {
-                // Проверка на корень диска и защищенные пути
                 if (FileUtils::IsRootOrProtectedPath(p)) {
                     MessageBoxW(hWnd, 
                         L"Нельзя выбрать корень диска (C:\\, D:\\), рабочий стол или системные папки!\n"
@@ -538,7 +661,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     break;
                 }
                 
-                // Проверка что папка не добавлена уже
                 auto watchPaths = Config::GetWatchPaths();
                 bool alreadyExists = false;
                 for (const auto& existing : watchPaths) {
@@ -580,7 +702,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         case ID_BTN_DEST: {
             std::wstring p = PickFolder(hWnd, L"Папка для бэкапа");
             if (!p.empty()) {
-                // Проверка на корень диска и защищенные пути
                 if (FileUtils::IsRootOrProtectedPath(p)) {
                     MessageBoxW(hWnd, 
                         L"Нельзя выбрать корень диска (C:\\, D:\\), рабочий стол или системные папки!\n"
@@ -596,8 +717,15 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
             break;
         }
-        case ID_BTN_START:    StartBackup(hWnd); break;
-        case ID_BTN_STOP:     StopBackup();      break;
+        
+        case ID_BTN_START:
+            StartBackup(hWnd);
+            break;
+            
+        case ID_BTN_STOP:
+            StopBackup();
+            break;
+            
         case ID_BTN_OPEN_DEST: {
             std::wstring dest = Config::Get(L"destPath");
             if (!dest.empty())
@@ -607,7 +735,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         case ID_BTN_GOOGLE_LOGIN: 
         {
-            // Замените YOUR_CLIENT_ID и YOUR_CLIENT_SECRET на реальные из Google Cloud Console
             static bool initialized = false;
             if (!initialized) 
             {
@@ -633,24 +760,22 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             });
             break;
         }
+        
         case ID_BTN_DRIVE_TOGGLE: {
             g_uploadToDrive = !g_uploadToDrive;
             SetWindowTextW(g_hBtnDriveToggle, g_uploadToDrive ? L"☁️ Облако включенно" : L"☁️ Облако выключенно");
             if (g_isRunning.load()) {
                 g_queue.EnableGoogleDriveUpload(g_uploadToDrive);
-                g_queue.SetGoogleDriveParentFolder(L"");  // корневая папка
+                g_queue.SetGoogleDriveParentFolder(L"");
             }
             break;
         }
-
         }
         break;
-
 
     case WM_LOG_UPDATE: {
         struct Payload { std::wstring path; bool ok; uint64_t bytes; };
         auto* p = reinterpret_cast<Payload*>(wParam);
-
 
         SYSTEMTIME st;
         GetLocalTime(&st);
@@ -689,26 +814,44 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         break;
     }
 
-    //Обнолвение Полной синхронизации
-    case WM_FULLSYNC_UPDATE:   
-    {
+    case WM_FULLSYNC_UPDATE: {
         std::wstring* msg = (std::wstring*)wParam;
         SetWindowTextW(g_hLblStatus, msg->c_str());
         delete msg;
         break;
     }
-    //Иницализация Watchera крч
-    case WM_START_WATCHER: 
-    {
+
+    case WM_START_WATCHER: {
         ActuallyStartWatcher();
         break;
     }
-    
+
+    case WM_SYSCOMMAND:
+        if (wParam == SC_MINIMIZE) {
+            // Сворачиваем в трей
+            ShowWindow(hWnd, SW_HIDE);
+            return 0;
+        }
+        // Для всех остальных системных команд (перемещение, изменение размера)
+        // ОБЯЗАТЕЛЬНО вызываем DefWindowProc
+        return DefWindowProcW(hWnd, msg, wParam, lParam);
+
+    case WM_CLOSE:
+        if (g_bForceExit) {
+            // Реальный выход через меню трея
+            DestroyWindow(hWnd);
+        } else {
+            // Обычное закрытие - сворачиваем в трей
+            ShowWindow(hWnd, SW_HIDE);
+        }
+        return 0;
+
     case WM_DESTROY:
         KillTimer(hWnd, ID_TIMER_UI);
-        if (g_isRunning) StopBackup();
+        if (g_isRunning.load()) StopBackup();
         Config::Set(L"drive_enabled", g_uploadToDrive ? L"1" : L"0");
         Config::Save();
+        RemoveTrayIcon();
         PostQuitMessage(0);
         break;
 
@@ -719,6 +862,22 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
+    // Проверка на уже запущенный экземпляр приложения
+    HANDLE hMutex = CreateMutexW(nullptr, TRUE, APP_MUTEX_NAME);
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        // Приложение уже запущено, находим его окно и показываем
+        HWND hExistingWnd = FindWindowW(L"NetBackupMVP", nullptr);
+        if (hExistingWnd) {
+            if (IsIconic(hExistingWnd)) {
+                ShowWindow(hExistingWnd, SW_RESTORE);
+            }
+            SetForegroundWindow(hExistingWnd);
+            ShowWindow(hExistingWnd, SW_SHOW);
+        }
+        CloseHandle(hMutex);
+        return 0;
+    }
+    
     CoInitialize(nullptr);
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES };
     InitCommonControlsEx(&icc);
@@ -742,23 +901,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
 
     Logger::Info(L"=== NetBackup запущен ===");
 
-
     WNDCLASSW wc = {};
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     wc.lpszClassName = L"NetBackupMVP";
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    // Устанавливаем иконку для окна
+    wc.hIcon = LoadIconW(hInstance, IDI_APPLICATION);
     RegisterClassW(&wc);
 
     // создаём окно
     HWND hWnd = CreateWindowW(
         L"NetBackupMVP",
-        L"NetBackup — Локальное хранение",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        600, 500,
+        L"NetBackup — Резервное копирование",
+        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+        650, 500,
         nullptr, nullptr, hInstance, nullptr
     );
 
@@ -789,6 +947,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         DispatchMessageW(&msg);
     }
 
+    CloseHandle(hMutex);
     Logger::Info(L"=== NetBackup завершён ===");
     CoUninitialize();
     return (int)msg.wParam;
