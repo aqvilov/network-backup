@@ -1,8 +1,8 @@
 // GoogleDriveUploader.cpp
-#include "GoogleDriveUploader.h"
-#include "Logger.h"
-#include "GoogleAuth.h"
-#include "FileUtils.h"
+#include "../include/GoogleDriveUploader.h"
+#include "../include/Logger.h"
+#include "../include/GoogleAuth.h"
+#include "../include/FileUtils.h"
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 #include <fstream>
@@ -12,8 +12,6 @@
 #include <iomanip>
 #include <ctime>
 #include <filesystem>
-
-GoogleDriveUploadQueue g_uploadQueue;
 
 using json = nlohmann::json;
 
@@ -107,19 +105,26 @@ std::string GoogleDriveUploader::ReadFileBinary(const std::wstring& path, std::v
         return "Failed to read file";
 }
 
-void GoogleDriveUploader::InitializeUploadQueue() {
-    g_uploadQueue.Start();
+void GoogleDriveUploader::InitializeUploadQueue()
+{
+    // Очередь инициализируется статически, здесь можно добавить
+    // дополнительную логику инициализации при необходимости
+    Logger::Info(L"[GoogleDrive] Очередь загрузки инициализирована");
 }
 
-void GoogleDriveUploader::ShutdownUploadQueue() {
-    g_uploadQueue.Stop();
+void GoogleDriveUploader::ShutdownUploadQueue()
+{
+    Logger::Info(L"[GoogleDrive] Очередь загрузки остановлена");
 }
 
 void GoogleDriveUploader::UploadFile(const std::wstring& localFilePath,
                                      const std::wstring& parentFolderId,
                                      UploadCallback callback)
 {
-    g_uploadQueue.Enqueue(localFilePath, parentFolderId, callback);
+    // Асинхронная загрузка через отдельный поток
+    std::thread([localFilePath, parentFolderId, callback]() {
+        UploadFileSync(localFilePath, parentFolderId, callback);
+    }).detach();
 }
 
 void GoogleDriveUploader::UploadFileSync(const std::wstring& localFilePath,
@@ -134,7 +139,7 @@ void GoogleDriveUploader::UploadFileSync(const std::wstring& localFilePath,
         callback(localFilePath, res);
         return;
     }
-
+    
     // 2. Проверка существования файла
     if (!std::filesystem::exists(localFilePath)) {
         UploadResult res;
@@ -153,6 +158,13 @@ void GoogleDriveUploader::UploadFileSync(const std::wstring& localFilePath,
         res.errorMsg = FileUtils::Utf8ToWide(readError);
         callback(localFilePath, res);
         return;
+    }
+
+    // Получаем access_token (уже обновлён в RefreshTokenIfNeeded)
+    std::wstring accessToken;
+    {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        accessToken = s_accessToken;
     }
 
     // 4. Формирование метаданных
@@ -185,7 +197,7 @@ void GoogleDriveUploader::UploadFileSync(const std::wstring& localFilePath,
 
     std::string url = "/upload/drive/v3/files?uploadType=multipart";
     httplib::Headers headers = {
-        {"Authorization", "Bearer " + FileUtils::WideToUtf8(s_accessToken)},
+        {"Authorization", "Bearer " + FileUtils::WideToUtf8(accessToken)},
         {"Content-Type", "multipart/related; boundary=" + boundary}
     };
 
