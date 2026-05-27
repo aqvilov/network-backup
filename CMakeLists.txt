@@ -66,42 +66,66 @@ endif()
 
 if(MSVC)
     add_compile_options(/utf-8)
-    add_compile_options(/wd4146)  # Отключаем warning C4146
+    add_compile_options(/wd4146)
 endif()
 
 # ============================================================================
-# Source files
+# Google Drive source files (общие для основного таргета и тестов)
 # ============================================================================
-set(SOURCES
-    src/MainWindow.cpp
-)
+set(GOOGLE_SOURCES "")
 
-# Добавляем Google файлы только если они существуют
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/GoogleAuth.cpp)
-    list(APPEND SOURCES src/GoogleAuth.cpp)
+    list(APPEND GOOGLE_SOURCES src/GoogleAuth.cpp)
     message(STATUS "GoogleAuth.cpp added")
 endif()
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/GoogleDriveUploader.cpp)
-    list(APPEND SOURCES src/GoogleDriveUploader.cpp)
+    list(APPEND GOOGLE_SOURCES src/GoogleDriveUploader.cpp)
     message(STATUS "GoogleDriveUploader.cpp added")
 endif()
 
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/GoogleDriveUploadQueue.cpp)
-    list(APPEND SOURCES src/GoogleDriveUploadQueue.cpp)
+    list(APPEND GOOGLE_SOURCES src/GoogleDriveUploadQueue.cpp)
     message(STATUS "GoogleDriveUploadQueue.cpp added")
 endif()
 
 # ============================================================================
+# Вспомогательная функция: общие настройки для тестовых таргетов
+# ============================================================================
+function(configure_test_target TARGET_NAME)
+    target_include_directories(${TARGET_NAME} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    target_compile_definitions(${TARGET_NAME} PRIVATE
+        _CRT_SECURE_NO_WARNINGS
+        WIN32_LEAN_AND_MEAN
+        _CONSOLE
+    )
+    target_link_libraries(${TARGET_NAME} PRIVATE shell32 ws2_32 crypt32)
+    if(OPENSSL_FOUND)
+        target_include_directories(${TARGET_NAME} PRIVATE ${OPENSSL_INCLUDE_DIR})
+        target_link_libraries(${TARGET_NAME} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(nlohmann_json_FOUND)
+        target_link_libraries(${TARGET_NAME} PRIVATE nlohmann_json::nlohmann_json)
+    endif()
+    if(MSVC)
+        target_compile_options(${TARGET_NAME} PRIVATE /utf-8 /wd4146)
+        set_target_properties(${TARGET_NAME} PROPERTIES LINK_FLAGS "/SUBSYSTEM:CONSOLE")
+    endif()
+endfunction()
+
+# ============================================================================
 # Target: NetBackup
 # ============================================================================
+set(SOURCES src/MainWindow.cpp ${GOOGLE_SOURCES})
+
 add_executable(NetBackup WIN32 ${SOURCES})
 
 target_include_directories(NetBackup PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# Библиотеки
 target_link_libraries(NetBackup PRIVATE
     comctl32
     shell32
@@ -110,13 +134,11 @@ target_link_libraries(NetBackup PRIVATE
     crypt32
 )
 
-# Добавляем OpenSSL если найден
 if(OPENSSL_FOUND)
     target_include_directories(NetBackup PRIVATE ${OPENSSL_INCLUDE_DIR})
     target_link_libraries(NetBackup PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
-# Добавляем nlohmann_json если найден
 if(nlohmann_json_FOUND)
     target_link_libraries(NetBackup PRIVATE nlohmann_json::nlohmann_json)
 endif()
@@ -126,7 +148,7 @@ if(MINGW)
 endif()
 
 set_target_properties(NetBackup PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/bin/Debug
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG   ${CMAKE_BINARY_DIR}/bin/Debug
     RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/bin/Release
 )
 
@@ -135,72 +157,76 @@ set_target_properties(NetBackup PROPERTIES
 # ============================================================================
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     message(STATUS "Found tests directory")
-
     enable_testing()
 
+    # --------------------------------------------------------------------------
     # test_fileutils
+    # --------------------------------------------------------------------------
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fileutils.cpp)
-        add_executable(test_fileutils ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fileutils.cpp)
-        target_include_directories(test_fileutils PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/include
+        add_executable(test_fileutils
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fileutils.cpp
         )
-        target_compile_definitions(test_fileutils PRIVATE
-            _CRT_SECURE_NO_WARNINGS
-            WIN32_LEAN_AND_MEAN
-            _CONSOLE  
-        )
-        target_link_libraries(test_fileutils PRIVATE shell32)
-        if(MSVC)
-            target_compile_options(test_fileutils PRIVATE /utf-8 /wd4146)
-            set_target_properties(test_fileutils PROPERTIES LINK_FLAGS "/SUBSYSTEM:CONSOLE")
-        endif()
+        configure_test_target(test_fileutils)
         add_test(NAME FileUtilsTest COMMAND test_fileutils)
         set_tests_properties(FileUtilsTest PROPERTIES TIMEOUT 30)
         message(STATUS "test_fileutils configured")
     endif()
 
-    # test_logger - ВРЕМЕННО ОТКЛЮЧЕН (ошибки линковки)
-    # if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_logger.cpp)
-    #     add_executable(test_logger ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_logger.cpp)
-    #     target_include_directories(test_logger PRIVATE
-    #         ${CMAKE_CURRENT_SOURCE_DIR}/include
-    #     )
-    #     target_compile_definitions(test_logger PRIVATE
-    #         _CRT_SECURE_NO_WARNINGS
-    #         WIN32_LEAN_AND_MEAN
-    #         _CONSOLE
-    #     )
-    #     if(MSVC)
-    #         target_compile_options(test_logger PRIVATE /utf-8 /wd4146)
-    #         set_target_properties(test_logger PROPERTIES LINK_FLAGS "/SUBSYSTEM:CONSOLE")
-    #     endif()
-    #     add_test(NAME LoggerTest COMMAND test_logger)
-    #     set_tests_properties(LoggerTest PROPERTIES TIMEOUT 30)
-    #     message(STATUS "test_logger configured")
-    # endif()
-
+    # --------------------------------------------------------------------------
     # test_watcher
+    # --------------------------------------------------------------------------
     if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_watcher.cpp)
-        add_executable(test_watcher ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_watcher.cpp)
-        target_include_directories(test_watcher PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/include
+        add_executable(test_watcher
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_watcher.cpp
         )
-        target_compile_definitions(test_watcher PRIVATE
-            _CRT_SECURE_NO_WARNINGS
-            WIN32_LEAN_AND_MEAN
-            _CONSOLE
-        )
-        target_link_libraries(test_watcher PRIVATE shell32 ws2_32)
-        if(MSVC)
-            target_compile_options(test_watcher PRIVATE /utf-8 /wd4146)
-            set_target_properties(test_watcher PROPERTIES LINK_FLAGS "/SUBSYSTEM:CONSOLE")
-        endif()
+        configure_test_target(test_watcher)
         add_test(NAME WatcherTest COMMAND test_watcher)
         set_tests_properties(WatcherTest PROPERTIES TIMEOUT 60)
         message(STATUS "test_watcher configured")
     endif()
 
-    message(STATUS "Tests configured (LoggerTest temporarily disabled)")
+    # --------------------------------------------------------------------------
+    # test_config
+    # --------------------------------------------------------------------------
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/config_test.cpp)
+        add_executable(test_config
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/config_test.cpp
+        )
+        configure_test_target(test_config)
+        add_test(NAME ConfigTest COMMAND test_config)
+        set_tests_properties(ConfigTest PROPERTIES TIMEOUT 30)
+        message(STATUS "test_config configured")
+    endif()
+
+    # --------------------------------------------------------------------------
+    # test_backup_queue
+    # BackupQueue.h включает GoogleDriveUploader.h — нужны .cpp реализации
+    # --------------------------------------------------------------------------
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/backup_queue_test.cpp)
+        add_executable(test_backup_queue
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/backup_queue_test.cpp
+            ${GOOGLE_SOURCES}   # GoogleAuth, GoogleDriveUploader, GoogleDriveUploadQueue
+        )
+        configure_test_target(test_backup_queue)
+        target_link_libraries(test_backup_queue PRIVATE ole32)
+        add_test(NAME BackupQueueTest COMMAND test_backup_queue)
+        set_tests_properties(BackupQueueTest PROPERTIES TIMEOUT 30)
+        message(STATUS "test_backup_queue configured")
+    endif()
+
+
+    # test_logger
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_logger.cpp)
+        add_executable(test_logger
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_logger.cpp
+        )
+        configure_test_target(test_logger)
+        add_test(NAME LoggerTest COMMAND test_logger)
+        set_tests_properties(LoggerTest PROPERTIES TIMEOUT 30)
+        message(STATUS "test_logger configured")
+    endif()
+
+    message(STATUS "Tests configured")
 endif()
 
 # ============================================================================
