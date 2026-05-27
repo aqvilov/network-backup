@@ -109,17 +109,27 @@ namespace FileUtils {
 
     // Простая функция для получения относительного пути (работает даже на разных дисках)
     inline std::wstring GetRelativePath(const std::wstring& fullPath, const std::wstring& rootPath) {
-        try {
-            fs::path full(fullPath);
-            fs::path root(rootPath);
-            auto rel = fs::relative(full, root);
-            return rel.wstring();
-        } catch (...) {
-            // Если не удалось получить относительный путь, возвращаем только имя файла
-            fs::path full(fullPath);
+    try {
+        fs::path full(fullPath);
+        fs::path root(rootPath);
+        
+        full = fs::absolute(full);
+        root = fs::absolute(root);
+        
+        // Если разные диски — возвращаем только имя файла
+        if (full.root_name() != root.root_name()) {
             return full.filename().wstring();
         }
+        
+        fs::path relative = fs::relative(full, root);
+        std::wstring result = relative.wstring();
+        std::replace(result.begin(), result.end(), L'/', L'\\');
+        return result;
+    } catch (...) {
+        // Fallback: только имя файла
+        return fs::path(fullPath).filename().wstring();
     }
+}
 
     // Проверка, является ли один путь подпапкой другого
     inline bool IsSubdirectory(const std::wstring& potentialParent, 
