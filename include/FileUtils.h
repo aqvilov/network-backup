@@ -9,6 +9,7 @@
 #include <shlobj.h>
 #include <chrono>
 #include <algorithm>
+#include <vector>
 #include "Config.h"
 
 namespace fs = std::filesystem;
@@ -21,13 +22,103 @@ namespace FileUtils {
         uint64_t    bytesCopied = 0;
     };
 
+    // Конвертация UTF-8 в std::wstring
+    inline std::wstring Utf8ToWide(const std::string& utf8) {
+        if (utf8.empty()) return L"";
+        int len = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), nullptr, 0);
+        std::wstring result(len, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), result.data(), len);
+        return result;
+    }
+
+    // Конвертация std::wstring в UTF-8
+    inline std::string WideToUtf8(const std::wstring& wide) {
+        if (wide.empty()) return "";
+        int len = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), (int)wide.size(), nullptr, 0, nullptr, nullptr);
+        std::string result(len, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), (int)wide.size(), result.data(), len, nullptr, nullptr);
+        return result;
+    }
+
+    // Получение MIME типа по расширению файла
+    inline std::string GetMimeType(const std::wstring& filePath) {
+        size_t dot = filePath.find_last_of(L'.');
+        if (dot == std::wstring::npos) return "application/octet-stream";
+        
+        std::wstring ext = filePath.substr(dot);
+        for (auto& c : ext) c = towlower(c);
+        
+        // Текстовые файлы
+        if (ext == L".txt") return "text/plain";
+        if (ext == L".html" || ext == L".htm") return "text/html";
+        if (ext == L".css") return "text/css";
+        if (ext == L".js") return "application/javascript";
+        if (ext == L".json") return "application/json";
+        if (ext == L".xml") return "application/xml";
+        if (ext == L".md") return "text/markdown";
+        if (ext == L".csv") return "text/csv";
+        
+        // Изображения
+        if (ext == L".jpg" || ext == L".jpeg") return "image/jpeg";
+        if (ext == L".png") return "image/png";
+        if (ext == L".gif") return "image/gif";
+        if (ext == L".bmp") return "image/bmp";
+        if (ext == L".ico") return "image/x-icon";
+        if (ext == L".svg") return "image/svg+xml";
+        if (ext == L".webp") return "image/webp";
+        
+        // Документы
+        if (ext == L".pdf") return "application/pdf";
+        if (ext == L".doc") return "application/msword";
+        if (ext == L".docx") return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        if (ext == L".xls") return "application/vnd.ms-excel";
+        if (ext == L".xlsx") return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        if (ext == L".ppt") return "application/vnd.ms-powerpoint";
+        if (ext == L".pptx") return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        
+        // Архивы
+        if (ext == L".zip") return "application/zip";
+        if (ext == L".rar") return "application/x-rar-compressed";
+        if (ext == L".7z") return "application/x-7z-compressed";
+        if (ext == L".tar") return "application/x-tar";
+        if (ext == L".gz") return "application/gzip";
+        
+        // Код
+        if (ext == L".cpp" || ext == L".c") return "text/x-csrc";
+        if (ext == L".h" || ext == L".hpp") return "text/x-chdr";
+        if (ext == L".py") return "text/x-python";
+        if (ext == L".java") return "text/x-java";
+        if (ext == L".cs") return "text/x-csharp";
+        if (ext == L".php") return "text/x-php";
+        if (ext == L".rb") return "text/x-ruby";
+        if (ext == L".go") return "text/x-go";
+        if (ext == L".rs") return "text/x-rust";
+        
+        // Аудио/Видео
+        if (ext == L".mp3") return "audio/mpeg";
+        if (ext == L".wav") return "audio/wav";
+        if (ext == L".ogg") return "audio/ogg";
+        if (ext == L".mp4") return "video/mp4";
+        if (ext == L".avi") return "video/x-msvideo";
+        if (ext == L".mov") return "video/quicktime";
+        if (ext == L".mkv") return "video/x-matroska";
+        
+        // По умолчанию
+        return "application/octet-stream";
+    }
+
     // Простая функция для получения относительного пути (работает даже на разных дисках)
     inline std::wstring GetRelativePath(const std::wstring& fullPath, const std::wstring& rootPath) {
-        fs::path full(fullPath);
-        fs::path root(rootPath);
-        // Если пути одинаковые или root является родителем full
-        auto rel = fs::relative(full, root);
-        return rel.wstring();
+        try {
+            fs::path full(fullPath);
+            fs::path root(rootPath);
+            auto rel = fs::relative(full, root);
+            return rel.wstring();
+        } catch (...) {
+            // Если не удалось получить относительный путь, возвращаем только имя файла
+            fs::path full(fullPath);
+            return full.filename().wstring();
+        }
     }
 
     // Проверка, является ли один путь подпапкой другого
@@ -39,17 +130,22 @@ namespace FileUtils {
             fs::path child = fs::canonical(potentialChild);
             
             // Проверяем, является ли child подпапкой parent
-            auto mismatch_pair = std::mismatch(
-                parent.begin(), parent.end(),
-                child.begin(), child.end()
-            );
+            auto parent_it = parent.begin();
+            auto child_it = child.begin();
             
-            return mismatch_pair.first == parent.end();
+            while (parent_it != parent.end() && child_it != child.end()) {
+                if (*parent_it != *child_it) return false;
+                ++parent_it;
+                ++child_it;
+            }
+            
+            return parent_it == parent.end();
         } catch (...) {
             return false;
         }
     }
-        // ========== Версионирование ==========
+    
+    // ========== Версионирование ==========
     inline fs::path GetVersionsRoot(const fs::path& destDir) 
     {
         return destDir / L".versions";
@@ -170,10 +266,7 @@ namespace FileUtils {
         }
         catch (const std::exception& e) 
         {
-            int len = MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, nullptr, 0);
-            std::wstring wide(len, L'\0');
-            MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wide.data(), len);
-            result.error = wide;
+            result.error = Utf8ToWide(e.what());
         }
         catch (...) 
         {
@@ -183,7 +276,7 @@ namespace FileUtils {
     }
 
     inline uint32_t ComputeCRC32(const std::wstring& filePath) {
-        std::ifstream f(filePath, std::ios::binary);
+        std::ifstream f(fs::path(filePath), std::ios::binary);
         if (!f.is_open()) return 0;
         uint32_t crc = 0xFFFFFFFF;
         char buf[4096];
@@ -211,14 +304,6 @@ namespace FileUtils {
         if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, path)))
             return std::wstring(path) + L"\\NetBackup";
         return L".";
-    }
-
-    inline std::wstring Utf8ToWide(const std::string& utf8) {
-        if (utf8.empty()) return L"";
-        int len = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), nullptr, 0);
-        std::wstring result(len, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), result.data(), len);
-        return result;
     }
 
     inline bool IsRootOrProtectedPath(const std::wstring& path) {

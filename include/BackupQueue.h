@@ -2,6 +2,7 @@
 //очередь задач на копирование
 
 #define WIN32_LEAN_AND_MEAN
+#include "GoogleDriveUploader.h"
 #include <windows.h>
 #include <string>
 #include <queue>
@@ -13,6 +14,11 @@
 #include <functional>
 #include "FileUtils.h"
 #include "Logger.h"
+
+// Внешняя функция для добавления ошибок (определена в MainWindow.cpp)
+// ПРОТОТИП ДОЛЖЕН БЫТЬ С 4 АРГУМЕНТАМИ
+extern void AddErrorRecord(const std::wstring& filePath, const std::wstring& errorMessage, 
+                           bool isDriveError, const std::wstring& watchRoot);
 
 // коллбэк результата: путь к файлу, успех/неудача, сколько байт скопировано
 using ResultCallback = std::function<void(const std::wstring& path,
@@ -49,7 +55,7 @@ public:
         m_watchRoots = watchRoots;
     }
 
-    // ДОБАВИТЬ В ОЧЕЕРЕДЬ
+    // ДОБАВИТЬ В ОЧЕРЕДЬ
     void Enqueue(const std::wstring& filePath) {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_pending.count(filePath)) return; // КОНТРИМ УЖЕ ДОБАВЛЕННЫЕ ФАЙЛЫ
@@ -71,6 +77,18 @@ public:
         Stats s   = m_stats;
         s.queued  = m_queue.size();
         return s;
+    }
+
+    void EnableGoogleDriveUpload(bool enable) 
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_uploadToDrive = enable;
+    }
+
+    void SetGoogleDriveParentFolder(const std::wstring& folderId) 
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_driveParentFolderId = folderId;
     }
 
 private:
@@ -127,7 +145,36 @@ private:
                 } else {
                     m_stats.errors++;
                     Logger::Error(L"Ошибка копирования: " + filePath + L" — " + result.error);
+                    // Добавляем ошибку в отчёт - 4 аргумента
+                    AddErrorRecord(filePath, result.error, false, watchRoot);
                 }
+            }
+            
+            // Загрузка в Google Drive (если включено)
+            bool uploadEnabled;
+            std::wstring parentFolder;
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                uploadEnabled = m_uploadToDrive;
+                parentFolder = m_driveParentFolderId;
+            }
+            
+            if (uploadEnabled && result.success) 
+            {
+                GoogleDriveUploader::UploadFile(filePath, parentFolder,
+                    [](const std::wstring& path, const UploadResult& res) 
+                    {
+                        if (res.success) 
+                        {
+                            Logger::Info(L"[Google Drive] Загружен: " + path);
+                        } 
+                        else 
+                        {
+                            Logger::Error(L"[Google Drive] Ошибка " + path + L": " + res.errorMsg);
+                            // Добавляем ошибку Google Drive в отчёт - 4 аргумента
+                            AddErrorRecord(path, res.errorMsg, true, L"");
+                        }
+                    });
             }
 
             if (m_onResult)
@@ -147,4 +194,7 @@ private:
     std::thread       m_worker;
     std::atomic<bool> m_running{false};
     Stats             m_stats;
+
+    bool m_uploadToDrive = false;
+    std::wstring m_driveParentFolderId;
 };
