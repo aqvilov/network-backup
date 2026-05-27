@@ -22,7 +22,7 @@ namespace FileUtils {
         uint64_t    bytesCopied = 0;
     };
 
-    // Конвертация UTF-8 в std::wstring
+
     inline std::wstring Utf8ToWide(const std::string& utf8) {
         if (utf8.empty()) return L"";
         int len = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), nullptr, 0);
@@ -31,7 +31,7 @@ namespace FileUtils {
         return result;
     }
 
-    // Конвертация std::wstring в UTF-8
+
     inline std::string WideToUtf8(const std::wstring& wide) {
         if (wide.empty()) return "";
         int len = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), (int)wide.size(), nullptr, 0, nullptr, nullptr);
@@ -40,7 +40,7 @@ namespace FileUtils {
         return result;
     }
 
-    // Получение MIME типа по расширению файла
+
     inline std::string GetMimeType(const std::wstring& filePath) {
         size_t dot = filePath.find_last_of(L'.');
         if (dot == std::wstring::npos) return "application/octet-stream";
@@ -48,7 +48,7 @@ namespace FileUtils {
         std::wstring ext = filePath.substr(dot);
         for (auto& c : ext) c = towlower(c);
         
-        // Текстовые файлы
+
         if (ext == L".txt") return "text/plain";
         if (ext == L".html" || ext == L".htm") return "text/html";
         if (ext == L".css") return "text/css";
@@ -58,7 +58,7 @@ namespace FileUtils {
         if (ext == L".md") return "text/markdown";
         if (ext == L".csv") return "text/csv";
         
-        // Изображения
+
         if (ext == L".jpg" || ext == L".jpeg") return "image/jpeg";
         if (ext == L".png") return "image/png";
         if (ext == L".gif") return "image/gif";
@@ -67,7 +67,7 @@ namespace FileUtils {
         if (ext == L".svg") return "image/svg+xml";
         if (ext == L".webp") return "image/webp";
         
-        // Документы
+
         if (ext == L".pdf") return "application/pdf";
         if (ext == L".doc") return "application/msword";
         if (ext == L".docx") return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -76,14 +76,14 @@ namespace FileUtils {
         if (ext == L".ppt") return "application/vnd.ms-powerpoint";
         if (ext == L".pptx") return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
         
-        // Архивы
+
         if (ext == L".zip") return "application/zip";
         if (ext == L".rar") return "application/x-rar-compressed";
         if (ext == L".7z") return "application/x-7z-compressed";
         if (ext == L".tar") return "application/x-tar";
         if (ext == L".gz") return "application/gzip";
         
-        // Код
+
         if (ext == L".cpp" || ext == L".c") return "text/x-csrc";
         if (ext == L".h" || ext == L".hpp") return "text/x-chdr";
         if (ext == L".py") return "text/x-python";
@@ -94,7 +94,7 @@ namespace FileUtils {
         if (ext == L".go") return "text/x-go";
         if (ext == L".rs") return "text/x-rust";
         
-        // Аудио/Видео
+
         if (ext == L".mp3") return "audio/mpeg";
         if (ext == L".wav") return "audio/wav";
         if (ext == L".ogg") return "audio/ogg";
@@ -103,11 +103,11 @@ namespace FileUtils {
         if (ext == L".mov") return "video/quicktime";
         if (ext == L".mkv") return "video/x-matroska";
         
-        // По умолчанию
+
         return "application/octet-stream";
     }
 
-    // Простая функция для получения относительного пути (работает даже на разных дисках)
+
     inline std::wstring GetRelativePath(const std::wstring& fullPath, const std::wstring& rootPath) {
     try {
         fs::path full(fullPath);
@@ -116,7 +116,7 @@ namespace FileUtils {
         full = fs::absolute(full);
         root = fs::absolute(root);
         
-        // Если разные диски — возвращаем только имя файла
+
         if (full.root_name() != root.root_name()) {
             return full.filename().wstring();
         }
@@ -126,12 +126,11 @@ namespace FileUtils {
         std::replace(result.begin(), result.end(), L'/', L'\\');
         return result;
     } catch (...) {
-        // Fallback: только имя файла
         return fs::path(fullPath).filename().wstring();
     }
 }
 
-    // Проверка, является ли один путь подпапкой другого
+
     inline bool IsSubdirectory(const std::wstring& potentialParent, 
                                const std::wstring& potentialChild) 
     {
@@ -139,7 +138,7 @@ namespace FileUtils {
             fs::path parent = fs::canonical(potentialParent);
             fs::path child = fs::canonical(potentialChild);
             
-            // Проверяем, является ли child подпапкой parent
+
             auto parent_it = parent.begin();
             auto child_it = child.begin();
             
@@ -155,7 +154,7 @@ namespace FileUtils {
         }
     }
     
-    // ========== Версионирование ==========
+
     inline fs::path GetVersionsRoot(const fs::path& destDir) 
     {
         return destDir / L".versions";
@@ -264,7 +263,7 @@ namespace FileUtils {
             fs::create_directories(destPath.parent_path());
             fs::copy_file(srcPath, destPath, fs::copy_options::overwrite_existing);
 
-            // После копирования – ротация версий (если файл версионируемый)
+
             if (Config::IsVersionedExtension(filename)) 
             {
                 int maxVersions = Config::GetMaxVersions();
@@ -328,36 +327,35 @@ namespace FileUtils {
                 return true;
             }
             
-            // Проверка на точный корень диска
             if (normalized.length() == 3 && 
                 normalized[1] == L':' && 
-                normalized[2] == L'\\') {
+                normalized[2] == L'\\') { // проверка на точный корень диска
                 return true;
             }
             
-            // Получаем специальные папки Windows
+
             wchar_t desktopPath[MAX_PATH];
             wchar_t documentsPath[MAX_PATH];
             wchar_t profilePath[MAX_PATH];
             
             std::vector<std::wstring> protectedPaths;
             
-            // Рабочий стол
+
             if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_DESKTOP, nullptr, 0, desktopPath))) {
                 protectedPaths.push_back(desktopPath);
             }
             
-            // Мои документы
+
             if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_MYDOCUMENTS, nullptr, 0, documentsPath))) {
                 protectedPaths.push_back(documentsPath);
             }
             
-            // Профиль пользователя
+
             if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_PROFILE, nullptr, 0, profilePath))) {
                 protectedPaths.push_back(profilePath);
             }
             
-            // Проверяем, не является ли выбранный путь одной из защищенных папок
+
             for (const auto& protectedPath : protectedPaths) {
                 try {
                     fs::path protected_canonical = fs::canonical(protectedPath);
@@ -365,13 +363,13 @@ namespace FileUtils {
                         return true;
                     }
                 } catch (...) {
-                    // Игнорируем ошибки при проверке отдельных путей
+
                 }
             }
             
             return false;
         } catch (...) {
-            return true; // В случае ошибки считаем путь защищенным (безопаснее)
+            return true;
         }
     }
 }
