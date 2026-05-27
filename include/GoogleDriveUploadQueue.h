@@ -6,10 +6,9 @@
 #include <atomic>
 #include <functional>
 #include <string>
+#include "GoogleDriveUploader.h"
 
-// Предварительное объявление, чтобы не включать GoogleDriveUploader.h (избегаем циклов)
-struct UploadResult;
-using UploadCallback = std::function<void(const std::wstring& localPath, const UploadResult& result)>;
+
 
 
 class GoogleDriveUploadQueue {
