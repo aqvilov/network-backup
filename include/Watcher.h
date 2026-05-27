@@ -101,7 +101,7 @@ private:
                         now - it->second.lastEventTime
                     ).count();
                     
-                    if (elapsed >= DEBOUNCE_DELAY_MS) {
+                    if (elapsed >= m_debounceDelayMs) {
                         readyEvents.push_back(it->second);
                         it = m_pendingEvents.erase(it);
                     } else {
@@ -230,7 +230,10 @@ private:
     HANDLE         m_hDir = INVALID_HANDLE_VALUE;
     
     // Debouncing members
-    static constexpr int DEBOUNCE_DELAY_MS = 2000;
+    int m_debounceDelayMs = 2000;
+
+    public:
+    void SetDebounceDelay(int ms) { m_debounceDelayMs = ms; }
     std::mutex m_eventsMutex;
     std::map<std::wstring, PendingEvent> m_pendingEvents;
     std::thread m_debounceThread;
