@@ -98,11 +98,11 @@ public:
     }
 
     
-    static int GetMaxVersions() 
-    {
-        std::wstring val = Get(L"maxVersions", L"5");
-        return _wtoi(val.c_str());
-    }
+    static int GetMaxVersions() {
+    std::wstring val = Get(L"maxVersions", L"5");
+    if (val.empty()) return 5;
+    return _wtoi(val.c_str());
+}
 
     static void SetMaxVersions(int n) 
     {
